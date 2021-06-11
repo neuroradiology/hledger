@@ -1,25 +1,36 @@
-# stack build plan using GHC 8.6.4
+# stack build plan using GHC 8.10.4
 
-resolver: nightly-2019-03-09
+nix:
+  pure: false
+  packages: [perl gmp ncurses zlib]
+
+resolver: lts-17.4
 
 packages:
 - hledger-lib
 - hledger
 - hledger-ui
 - hledger-web
-- hledger-api
 
-nix:
-  pure: false
-  packages: [perl gmp ncurses zlib]
+# extra-deps:
+# for hledger-lib:
+# for hledger:
+# for hledger-ui:
+# for hledger-web:
+# for Shake.hs:
 
-# allow-newer: true
+# for precise profiling, per https://www.tweag.io/posts/2020-01-30-haskell-profiling.html:
+# apply-ghc-options: everything
+# rebuild-ghc-options: true
+# stack build --profile --ghc-options="-fno-prof-auto"
 
-extra-deps:
-# hledger-lib:
-# hledger:
-# hledger-ui:
-# hledger-web:
-# hledger-api:
-# Workaround for https://github.com/commercialhaskell/stack/issues/3922:
-- haskell-src-exts-1.21.0
+# tell GHC to write hie files, eg for weeder. Rumoured to be slow.
+# ghc-options:
+#   "$locals": -fwrite-ide-info
+
+# ghc-options:
+#   "$locals": -ddump-timings
+#  "$targets": -Werror
+#  "$everything": -O2
+#  some-package: -DSOME_CPP_FLAG
+  

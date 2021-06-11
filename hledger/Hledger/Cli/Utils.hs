@@ -10,43 +10,43 @@ Hledger.Utils.
 
 module Hledger.Cli.Utils
     (
+     unsupportedOutputFormatError,
      withJournalDo,
      writeOutput,
+     writeOutputLazyText,
      journalTransform,
      journalAddForecast,
      journalReload,
      journalReloadIfChanged,
      journalFileIsNewer,
-     journalSpecifiedFileIsNewer,
-     fileModificationTime,
      openBrowserOn,
      writeFileWithBackup,
      writeFileWithBackupIfChanged,
      readFileStrictly,
      pivotByOpts,
      anonymiseByOpts,
+     utcTimeToClockTime,
+     journalSimilarTransaction,
      tests_Cli_Utils,
     )
 where
 import Control.Exception as C
-import Control.Monad
 
-import Data.Hashable (hash)
 import Data.List
 import Data.Maybe
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import Data.Time (Day, addDays)
-import Data.Word
-import Numeric
-import Safe (readMay)
+import qualified Data.Text.Lazy as TL
+import qualified Data.Text.Lazy.IO as TL
+import Data.Time (UTCTime, Day, addDays)
+import Safe (readMay, headMay)
 import System.Console.CmdArgs
-import System.Directory (getModificationTime, getDirectoryContents, copyFile)
+import System.Directory (getModificationTime, getDirectoryContents, copyFile, doesFileExist)
 import System.Exit
 import System.FilePath ((</>), splitFileName, takeDirectory)
 import System.Info (os)
 import System.Process (readProcessWithExitCode)
-import System.Time (ClockTime, getClockTime, diffClockTimes, TimeDiff(TimeDiff))
+import System.Time (diffClockTimes, TimeDiff(TimeDiff))
 import Text.Printf
 import Text.Regex.TDFA ((=~))
 
@@ -54,13 +54,19 @@ import System.Time (ClockTime(TOD))
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 
 import Hledger.Cli.CliOptions
+import Hledger.Cli.Anon
 import Hledger.Data
 import Hledger.Read
 import Hledger.Reports
 import Hledger.Utils
+import Control.Monad (when)
+
+-- | Standard error message for a bad output format specified with -O/-o.
+unsupportedOutputFormatError :: String -> String
+unsupportedOutputFormatError fmt = "Sorry, output format \""++fmt++"\" is unrecognised or not yet supported for this kind of report."
 
 -- | Parse the user's specified journal file(s) as a Journal, maybe apply some
--- transformations according to options, and run a hledger command with it. 
+-- transformations according to options, and run a hledger command with it.
 -- Or, throw an error.
 withJournalDo :: CliOpts -> (Journal -> IO a) -> IO a
 withJournalDo opts cmd = do
@@ -68,9 +74,9 @@ withJournalDo opts cmd = do
   -- it's stdin, or it doesn't exist and we are adding. We read it strictly
   -- to let the add command work.
   journalpaths <- journalFilePathFromOpts opts
-  readJournalFiles (inputopts_ opts) journalpaths
-  >>= mapM (journalTransform opts)
-  >>= either error' cmd
+  files <- readJournalFiles (inputopts_ opts) journalpaths
+  let transformed = journalTransform opts <$> files
+  either error' cmd transformed  -- PARTIAL:
 
 -- | Apply some extra post-parse transformations to the journal, if
 -- specified by options. These happen after journal validation, but
@@ -80,13 +86,13 @@ withJournalDo opts cmd = do
 -- - pivoting account names (--pivot)
 -- - anonymising (--anonymise).
 --
-journalTransform :: CliOpts -> Journal -> IO Journal
-journalTransform opts@CliOpts{reportopts_=_ropts} =
-      journalAddForecast opts
--- - converting amounts to market value (--value)
-  -- >=> journalApplyValue ropts
-  >=> return . pivotByOpts opts
-  >=> return . anonymiseByOpts opts
+journalTransform :: CliOpts -> Journal -> Journal
+journalTransform opts =
+    anonymiseByOpts opts
+  -- - converting amounts to market value (--value)
+  -- . journalApplyValue ropts
+  . pivotByOpts opts
+  . journalAddForecast opts
 
 -- | Apply the pivot transformation on a journal, if option is present.
 pivotByOpts :: CliOpts -> Journal -> Journal
@@ -98,85 +104,74 @@ pivotByOpts opts =
 -- | Apply the anonymisation transformation on a journal, if option is present
 anonymiseByOpts :: CliOpts -> Journal -> Journal
 anonymiseByOpts opts =
-  case maybestringopt "anon" . rawopts_ $ opts of
-    Just _  -> anonymise
-    Nothing -> id
-
--- | Apply the anonymisation transformation on a journal
-anonymise :: Journal -> Journal
-anonymise j
-  = let
-      pAnons p = p { paccount = T.intercalate (T.pack ":") . map anon . T.splitOn (T.pack ":") . paccount $ p
-                   , pcomment = T.empty
-                   , ptransaction = fmap tAnons . ptransaction $ p
-                   , poriginal = pAnons <$> poriginal p
-                   }
-      tAnons txn = txn { tpostings = map pAnons . tpostings $ txn
-                       , tdescription = anon . tdescription $ txn
-                       , tcomment = T.empty
-                       }
-    in
-      j { jtxns = map tAnons . jtxns $ j }
-  where
-    anon = T.pack . flip showHex "" . (fromIntegral :: Int -> Word32) . hash
+  if anon_ . inputopts_ $ opts
+      then anon
+      else id
 
 -- | Generate periodic transactions from all periodic transaction rules in the journal.
 -- These transactions are added to the in-memory Journal (but not the on-disk file).
 --
--- They start on or after the day following the latest normal transaction in the journal,
--- or today if there are none.
--- They end on or before the specified report end date, or 180 days from today if unspecified.
+-- When --auto is active, auto posting rules will be applied to the
+-- generated transactions. If the query in any auto posting rule fails
+-- to parse, this function will raise an error.
 --
-journalAddForecast :: CliOpts -> Journal -> IO Journal
-journalAddForecast opts@CliOpts{inputopts_=iopts, reportopts_=ropts} j = do
-  today <- getCurrentDay
+-- The start & end date for generated periodic transactions are determined in
+-- a somewhat complicated way; see the hledger manual -> Periodic transactions.
+--
+journalAddForecast :: CliOpts -> Journal -> Journal
+journalAddForecast CliOpts{inputopts_=iopts, reportspec_=rspec} j =
+    case forecast_ ropts of
+        Nothing -> j
+        Just _  -> either (error') id . journalApplyCommodityStyles $  -- PARTIAL:
+                     journalBalanceTransactions' iopts j{ jtxns = concat [jtxns j, forecasttxns'] }
+  where
+    today = rsToday rspec
+    ropts = rsOpts rspec
 
-  -- "They start on or after the day following the latest normal transaction in the journal, or today if there are none."
-  let mjournalend   = dbg2 "journalEndDate" $ journalEndDate False j  -- ignore secondary dates
-      forecaststart = dbg2 "forecaststart" $ fromMaybe today mjournalend
+    -- "They can start no earlier than: the day following the latest normal transaction in the journal (or today if there are none)."
+    mjournalend   = dbg2 "journalEndDate" $ journalEndDate False j  -- ignore secondary dates
+    forecastbeginDefault = dbg2 "forecastbeginDefault" $ fromMaybe today mjournalend
 
-  -- "They end on or before the specified report end date, or 180 days from today if unspecified."
-  mspecifiedend <-  snd . dbg2 "specifieddates" <$> specifiedStartEndDates ropts
-  let forecastend = dbg2 "forecastend" $ fromMaybe (addDays 180 today) mspecifiedend
+    -- "They end on or before the specified report end date, or 180 days from today if unspecified."
+    mspecifiedend = dbg2 "specifieddates" $ reportPeriodLastDay rspec
+    forecastendDefault = dbg2 "forecastendDefault" $ fromMaybe (addDays 180 today) mspecifiedend
 
-  let forecastspan = DateSpan (Just forecaststart) (Just forecastend)
-      forecasttxns =
-        [ txnTieKnot t | pt <- jperiodictxns j
-                       , t <- runPeriodicTransaction pt forecastspan
-                       , spanContainsDate forecastspan (tdate t)
-                       ]
-      -- With --auto enabled, transaction modifiers are also applied to forecast txns
-      forecasttxns' = (if auto_ iopts then modifyTransactions (jtxnmodifiers j) else id) forecasttxns
+    forecastspan = dbg2 "forecastspan" $
+      spanDefaultsFrom
+        (fromMaybe nulldatespan $ dbg2 "forecastspan flag" $ forecast_ ropts)
+        (DateSpan (Just forecastbeginDefault) (Just forecastendDefault))
 
-  return $
-    if forecast_ ropts 
-      then journalBalanceTransactions' opts j{ jtxns = concat [jtxns j, forecasttxns'] }
-      else j
-  where      
-    journalBalanceTransactions' opts j =
-      let assrt = not . ignore_assertions_ $ inputopts_ opts
-      in
-       either error' id $ journalBalanceTransactions assrt j
+    forecasttxns =
+      [ txnTieKnot t | pt <- jperiodictxns j
+                     , t <- runPeriodicTransaction pt forecastspan
+                     , spanContainsDate forecastspan (tdate t)
+                     ]
+    -- With --auto enabled, transaction modifiers are also applied to forecast txns
+    forecasttxns' =
+      (if auto_ iopts then either error' id . modifyTransactions today (jtxnmodifiers j) else id)  -- PARTIAL:
+      forecasttxns
+
+    journalBalanceTransactions' iopts j =
+       either error' id $ journalBalanceTransactions (balancingopts_ iopts) j  -- PARTIAL:
 
 -- | Write some output to stdout or to a file selected by --output-file.
 -- If the file exists it will be overwritten.
 writeOutput :: CliOpts -> String -> IO ()
 writeOutput opts s = do
   f <- outputFileFromOpts opts
-  (if f == "-" then putStr else writeFile f) s
-  
+  (maybe putStr writeFile f) s
+
+-- | Write some output to stdout or to a file selected by --output-file.
+-- If the file exists it will be overwritten. This function operates on Lazy
+-- Text values.
+writeOutputLazyText :: CliOpts -> TL.Text -> IO ()
+writeOutputLazyText opts s = do
+  f <- outputFileFromOpts opts
+  (maybe TL.putStr TL.writeFile f) s
+
 -- -- | Get a journal from the given string and options, or throw an error.
 -- readJournal :: CliOpts -> String -> IO Journal
 -- readJournal opts s = readJournal def Nothing s >>= either error' return
-
--- | Re-read the journal file(s) specified by options, applying any
--- transformations specified by options. Or return an error string.
--- Reads the full journal, without filtering.
-journalReload :: CliOpts -> IO (Either String Journal)
-journalReload opts = do
-  journalpaths <- journalFilePathFromOpts opts
-  readJournalFiles (inputopts_ opts) journalpaths
-  >>= mapM (journalTransform opts)
 
 -- | Re-read the option-specified journal file(s), but only if any of
 -- them has changed since last read. (If the file is standard input,
@@ -186,43 +181,57 @@ journalReload opts = do
 -- the full journal, without filtering.
 journalReloadIfChanged :: CliOpts -> Day -> Journal -> IO (Either String Journal, Bool)
 journalReloadIfChanged opts _d j = do
-  let maybeChangedFilename f = do newer <- journalSpecifiedFileIsNewer j f
+  let maybeChangedFilename f = do newer <- journalFileIsNewer j f
                                   return $ if newer then Just f else Nothing
   changedfiles <- catMaybes `fmap` mapM maybeChangedFilename (journalFilePaths j)
   if not $ null changedfiles
    then do
-     whenLoud $ printf "%s has changed, reloading\n" (head changedfiles)
+     -- XXX not sure why we use cmdarg's verbosity here, but keep it for now
+     verbose <- isLoud
+     when (verbose || debugLevel >= 6) $ printf "%s has changed, reloading\n" (head changedfiles)
      ej <- journalReload opts
      return (ej, True)
    else
      return (Right j, False)
 
--- | Has the journal's main data file changed since the journal was last
--- read ?
-journalFileIsNewer :: Journal -> IO Bool
-journalFileIsNewer j@Journal{jlastreadtime=tread} = do
-  tmod <- fileModificationTime $ journalFilePath j
-  return $ diffClockTimes tmod tread > (TimeDiff 0 0 0 0 0 0 0)
+-- | Re-read the journal file(s) specified by options, applying any
+-- transformations specified by options. Or return an error string.
+-- Reads the full journal, without filtering.
+journalReload :: CliOpts -> IO (Either String Journal)
+journalReload opts = do
+  journalpaths <- dbg6 "reloading files" <$> journalFilePathFromOpts opts
+  files <- readJournalFiles (inputopts_ opts) journalpaths
+  return $ journalTransform opts <$> files
 
--- | Has the specified file (presumably one of journal's data files)
--- changed since journal was last read ?
-journalSpecifiedFileIsNewer :: Journal -> FilePath -> IO Bool
-journalSpecifiedFileIsNewer Journal{jlastreadtime=tread} f = do
-  tmod <- fileModificationTime f
-  return $ diffClockTimes tmod tread > (TimeDiff 0 0 0 0 0 0 0)
+-- | Has the specified file changed since the journal was last read ?
+-- Typically this is one of the journal's journalFilePaths. These are
+-- not always real files, so the file's existence is tested first;
+-- for non-files the answer is always no.
+journalFileIsNewer :: Journal -> FilePath -> IO Bool
+journalFileIsNewer Journal{jlastreadtime=tread} f = do
+  mtmod <- maybeFileModificationTime f
+  return $
+    case mtmod of
+      Just tmod -> diffClockTimes tmod tread > (TimeDiff 0 0 0 0 0 0 0)
+      Nothing   -> False
 
--- | Get the last modified time of the specified file, or if it does not
--- exist or there is some other error, the current time.
-fileModificationTime :: FilePath -> IO ClockTime
-fileModificationTime f
-    | null f = getClockTime
-    | otherwise = (do
-        utc <- getModificationTime f
-        let nom = utcTimeToPOSIXSeconds utc
-        let clo = TOD (read $ takeWhile (`elem` ("0123456789"::String)) $ show nom) 0 -- XXX read
-        return clo
-        )
-        `C.catch` \(_::C.IOException) -> getClockTime
+-- | Get the last modified time of the specified file, if it exists.
+maybeFileModificationTime :: FilePath -> IO (Maybe ClockTime)
+maybeFileModificationTime f = do
+  exists <- doesFileExist f
+  if exists
+  then do
+    utc <- getModificationTime f
+    return $ Just $ utcTimeToClockTime utc
+  else
+    return Nothing
+
+utcTimeToClockTime :: UTCTime -> ClockTime
+utcTimeToClockTime utc = TOD posixsecs picosecs
+  where
+    (posixsecs, frac) = properFraction $ utcTimeToPOSIXSeconds utc
+    picosecs = round $ frac * 1e12
+
 -- | Attempt to open a web browser on the given url, all platforms.
 openBrowserOn :: String -> IO ExitCode
 openBrowserOn u = trybrowsers browsers u
@@ -249,6 +258,14 @@ openBrowserOn u = trybrowsers browsers u
 -- overwrite it with this new text, or give an error, but only if the text
 -- is different from the current file contents, and return a flag
 -- indicating whether we did anything.
+--
+-- The given text should have unix line endings (\n); the existing
+-- file content will be normalised to unix line endings before
+-- comparing the two. If the file is overwritten, the new file will
+-- have the current system's native line endings (\n on unix, \r\n on
+-- windows). This could be different from the file's previous line
+-- endings, if working with a DOS file on unix or vice-versa.
+--
 writeFileWithBackupIfChanged :: FilePath -> T.Text -> IO Bool
 writeFileWithBackupIfChanged f t = do
   s <- readFilePortably f
@@ -284,6 +301,17 @@ backupNumber f g = case g =~ ("^" ++ f ++ "\\.([0-9]+)$") of
                         (_::FilePath, _::FilePath, _::FilePath, [ext::FilePath]) -> readMay ext
                         _ -> Nothing
 
+-- Identify the closest recent match for this description in past transactions.
+-- If the options specify a query, only matched transactions are considered.
+journalSimilarTransaction :: CliOpts -> Journal -> T.Text -> Maybe Transaction
+journalSimilarTransaction cliopts j desc = mbestmatch
+  where
+    mbestmatch = snd <$> headMay bestmatches
+    bestmatches =
+      dbg1With (unlines . ("similar transactions:":) . map (\(score,Transaction{..}) -> printf "%0.3f %s %s" score (show tdate) tdescription)) $
+      journalTransactionsSimilarTo j q desc 10
+    q = queryFromFlags $ rsOpts $ reportspec_ cliopts
+
 tests_Cli_Utils = tests "Utils" [
 
   --  tests "journalApplyValue" [
@@ -301,7 +329,7 @@ tests_Cli_Utils = tests "Utils" [
   --            -- all prices for consistent timing.
   --            let ropts = defreportopts{
   --              value_=True,
-  --              period_=PeriodTo $ parsedate "3000-01-01"
+  --              period_=PeriodTo $ fromGregorian 3000 01 01
   --              }
   --            j' <- journalApplyValue ropts j
   --            sum (journalAmounts j') `seq` return ()

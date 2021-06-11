@@ -20,9 +20,13 @@ module Hledger.Utils.Parse (
   showDateParseError,
   nonspace,
   isNonNewlineSpace,
-  spacenonewline,
   restofline,
   eolof,
+
+  spacenonewline,
+  skipNonNewlineSpaces,
+  skipNonNewlineSpaces1,
+  skipNonNewlineSpaces',
 
   -- * re-exports
   CustomErr
@@ -49,14 +53,15 @@ type SimpleStringParser a = Parsec CustomErr String a
 -- | A parser of strict text to some type.
 type SimpleTextParser = Parsec CustomErr Text  -- XXX an "a" argument breaks the CsvRulesParser declaration somehow
 
--- | A parser of text in some monad.
+-- | A parser of text that runs in some monad.
 type TextParser m a = ParsecT CustomErr Text m a
 
--- | A parser of text in some monad, with a journal as state.
+-- | A parser of text that runs in some monad, keeping a Journal as state.
 type JournalParser m a = StateT Journal (ParsecT CustomErr Text m) a
 
--- | A parser of text in some monad, with a journal as state, that can throw a
--- "final" parse error that does not backtrack.
+-- | A parser of text that runs in some monad, keeping a Journal as
+-- state, that can throw an exception to end parsing, preventing
+-- further parser backtracking.
 type ErroringJournalParser m a =
   StateT Journal (ParsecT CustomErr Text (ExceptT FinalParseError m)) a
 
@@ -103,7 +108,7 @@ fromparse
 fromparse = either parseerror id
 
 parseerror :: (Show t, Show (Token t), Show e) => ParseErrorBundle t e -> a
-parseerror e = error' $ showParseError e
+parseerror e = error' $ showParseError e  -- PARTIAL:
 
 showParseError
   :: (Show t, Show (Token t), Show e)
@@ -119,12 +124,31 @@ nonspace = satisfy (not . isSpace)
 
 isNonNewlineSpace :: Char -> Bool
 isNonNewlineSpace c = c /= '\n' && isSpace c
+-- XXX support \r\n ?
+-- isNonNewlineSpace c = c /= '\n' && c /= '\r' && isSpace c
 
 spacenonewline :: (Stream s, Char ~ Token s) => ParsecT CustomErr s m Char
 spacenonewline = satisfy isNonNewlineSpace
+{-# INLINABLE spacenonewline #-}
 
 restofline :: TextParser m String
-restofline = anySingle `manyTill` newline
+restofline = anySingle `manyTill` eolof
+
+-- Skip many non-newline spaces.
+skipNonNewlineSpaces :: (Stream s, Token s ~ Char) => ParsecT CustomErr s m ()
+skipNonNewlineSpaces = () <$ takeWhileP Nothing isNonNewlineSpace
+{-# INLINABLE skipNonNewlineSpaces #-}
+
+-- Skip many non-newline spaces, failing if there are none.
+skipNonNewlineSpaces1 :: (Stream s, Token s ~ Char) => ParsecT CustomErr s m ()
+skipNonNewlineSpaces1 = () <$ takeWhile1P Nothing isNonNewlineSpace
+{-# INLINABLE skipNonNewlineSpaces1 #-}
+
+-- Skip many non-newline spaces, returning True if any have been skipped.
+skipNonNewlineSpaces' :: (Stream s, Token s ~ Char) => ParsecT CustomErr s m Bool
+skipNonNewlineSpaces' = True <$ skipNonNewlineSpaces1 <|> pure False
+{-# INLINABLE skipNonNewlineSpaces' #-}
+
 
 eolof :: TextParser m ()
 eolof = (newline >> return ()) <|> eof

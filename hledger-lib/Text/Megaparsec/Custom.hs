@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-} -- new
 {-# LANGUAGE LambdaCase #-}
@@ -51,8 +52,8 @@ import "base-compat-batteries" Prelude.Compat hiding (readFile)
 
 import Control.Monad.Except
 import Control.Monad.State.Strict (StateT, evalStateT)
-import Data.Foldable (asum, toList)
 import qualified Data.List.NonEmpty as NE
+import Data.Monoid (Alt(..))
 import qualified Data.Set as S
 import Data.Text (Text)
 import Text.Megaparsec
@@ -176,7 +177,12 @@ reparseExcerpt (SourceExcerpt offset txt) p = do
     Left errBundle -> customFailure $ ErrorReparsing $ bundleErrors errBundle
 
   where
-    offsetInitialState :: Int -> s -> State s
+    offsetInitialState :: Int -> s ->
+#if MIN_VERSION_megaparsec(8,0,0)
+      State s e
+#else
+      State s
+#endif
     offsetInitialState initialOffset s = State
       { stateInput  = s
       , stateOffset = initialOffset
@@ -187,6 +193,9 @@ reparseExcerpt (SourceExcerpt offset txt) p = do
         , pstateTabWidth = defaultTabWidth
         , pstateLinePrefix = ""
         }
+#if MIN_VERSION_megaparsec(8,0,0)
+      , stateParseErrors = []
+#endif
       }
 
 --- * Pretty-printing custom parse errors
@@ -230,12 +239,12 @@ customErrorBundlePretty errBundle =
     -- (since only one custom error should be used at a time).
     findCustomError :: ParseError Text CustomErr -> Maybe CustomErr
     findCustomError err = case err of
-      FancyError _ errSet -> 
+      FancyError _ errSet ->
         finds (\case {ErrorCustom e -> Just e; _ -> Nothing}) errSet
       _ -> Nothing
 
     finds :: (Foldable t) => (a -> Maybe b) -> t a -> Maybe b
-    finds f = asum . map f . toList
+    finds f = getAlt . foldMap (Alt . f)
 
 
 --- * "Final" parse errors

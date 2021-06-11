@@ -1,0 +1,37 @@
+# Note since 1.17 we need to specify stdin's format explicitly.
+
+# 1. basic timedot entry
+<
+# comment
+
+; another comment
+2020-01-01
+ a:aa  1
+ b:bb  2
+
+$ hledger -ftimedot:- print
+2020-01-01 *
+    (a:aa)            1.00
+
+2020-01-01 *
+    (b:bb)            2.00
+
+>=0
+
+# 2. Org mode headline prefixes are ignored.
+<
+* 2020-01-01
+** a:aa  1
+
+$ hledger -ftimedot:- print
+2020-01-01 *
+    (a:aa)            1.00
+
+>=0
+
+# 3. Command-line account aliases are applied.
+$ hledger -ftimedot:- print --alias a=b
+2020-01-01 *
+    (b:aa)            1.00
+
+>=0

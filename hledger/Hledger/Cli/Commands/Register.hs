@@ -4,10 +4,10 @@ A ledger-compatible @register@ command.
 
 -}
 
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE CPP               #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE TemplateHaskell   #-}
 
 module Hledger.Cli.Commands.Register (
   registermode
@@ -18,20 +18,23 @@ module Hledger.Cli.Commands.Register (
  ,tests_Register
 ) where
 
-import Data.List
-import Data.Maybe
--- import Data.Text (Text)
+import Data.Default (def)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
-import System.Console.CmdArgs.Explicit
-import Hledger.Read.CsvReader (CSV, Record, printCSV)
+import qualified Data.Text.Lazy as TL
+import qualified Data.Text.Lazy.Builder as TB
+import System.Console.CmdArgs.Explicit (flagNone, flagReq)
+import Safe (maximumDef)
 
 import Hledger
+import Hledger.Read.CsvReader (CSV, CsvRecord, printCSV)
 import Hledger.Cli.CliOptions
 import Hledger.Cli.Utils
+import Text.Tabular.AsciiWide
 
 registermode = hledgerCommandMode
   $(embedFileRelative "Hledger/Cli/Commands/Register.txt")
-  ([flagNone ["cumulative"] (setboolopt "change")
+  ([flagNone ["cumulative"] (setboolopt "cumulative")
      "show running total from report start date (default)"
   ,flagNone ["historical","H"] (setboolopt "historical")
      "show historical running total/balance (includes postings before report start date)\n "
@@ -48,49 +51,60 @@ registermode = hledgerCommandMode
 #endif
       ++ " or $COLUMNS). -wN,M sets description width as well."
      )
-  ] ++ outputflags)
+  ,outputFormatFlag ["txt","csv","json"]
+  ,outputFileFlag
+  ])
   [generalflagsgroup1]
-  []
+  hiddenflags
   ([], Just $ argsFlag "[QUERY]")
 
 -- | Print a (posting) register report.
 register :: CliOpts -> Journal -> IO ()
-register opts@CliOpts{reportopts_=ropts@ReportOpts{..}} j = do
-  d <- getCurrentDay
-  let fmt = outputFormatFromOpts opts
-      render | fmt=="csv"  = const ((++"\n") . printCSV . postingsReportAsCsv)
-             | fmt=="html" = const $ error' "Sorry, HTML output is not yet implemented for this kind of report."  -- TODO
-             | otherwise   = postingsReportAsText
-  writeOutput opts $ render opts $ postingsReport ropts (queryFromOpts d ropts) j
+register opts@CliOpts{reportspec_=rspec} j =
+    writeOutputLazyText opts . render $ postingsReport rspec j
+  where
+    fmt = outputFormatFromOpts opts
+    render | fmt=="txt"  = postingsReportAsText opts
+           | fmt=="csv"  = printCSV . postingsReportAsCsv
+           | fmt=="json" = toJsonText
+           | otherwise   = error' $ unsupportedOutputFormatError fmt  -- PARTIAL:
 
 postingsReportAsCsv :: PostingsReport -> CSV
-postingsReportAsCsv (_,is) =
+postingsReportAsCsv is =
   ["txnidx","date","code","description","account","amount","total"]
   :
   map postingsReportItemAsCsvRecord is
 
-postingsReportItemAsCsvRecord :: PostingsReportItem -> Record
+postingsReportItemAsCsvRecord :: PostingsReportItem -> CsvRecord
 postingsReportItemAsCsvRecord (_, _, _, p, b) = [idx,date,code,desc,acct,amt,bal]
   where
-    idx  = show $ maybe 0 tindex $ ptransaction p
+    idx  = T.pack . show . maybe 0 tindex $ ptransaction p
     date = showDate $ postingDate p -- XXX csv should show date2 with --date2
-    code = maybe "" (T.unpack . tcode) $ ptransaction p
-    desc = T.unpack $ maybe "" tdescription $ ptransaction p
-    acct = bracket $ T.unpack $ paccount p
+    code = maybe "" tcode $ ptransaction p
+    desc = maybe "" tdescription $ ptransaction p
+    acct = bracket $ paccount p
       where
         bracket = case ptype p of
-                             BalancedVirtualPosting -> (\s -> "["++s++"]")
-                             VirtualPosting -> (\s -> "("++s++")")
+                             BalancedVirtualPosting -> wrap "[" "]"
+                             VirtualPosting -> wrap "(" ")"
                              _ -> id
-    amt = showMixedAmountOneLineWithoutPrice $ pamount p
-    bal = showMixedAmountOneLineWithoutPrice b
+    -- Since postingsReport strips prices from all Amounts when not used, we can display prices.
+    amt = wbToText . showMixedAmountB oneLine{displayPrice=True} $ pamount p
+    bal = wbToText $ showMixedAmountB oneLine{displayPrice=True} b
 
 -- | Render a register report as plain text suitable for console output.
-postingsReportAsText :: CliOpts -> PostingsReport -> String
-postingsReportAsText opts (_,items) = unlines $ map (postingsReportItemAsText opts amtwidth balwidth) items
+postingsReportAsText :: CliOpts -> PostingsReport -> TL.Text
+postingsReportAsText opts items = TB.toLazyText $ foldMap first3 linesWithWidths
   where
-    amtwidth = maximumStrict $ 12 : map (strWidth . showMixedAmount . itemamt) items
-    balwidth = maximumStrict $ 12 : map (strWidth . showMixedAmount . itembal) items
+    linesWithWidths = map (postingsReportItemAsText opts amtwidth balwidth) items
+    -- Tying this knot seems like it will save work, but ends up creating a big
+    -- space leak. Can we fix that leak without recalculating everything?
+    -- amtwidth = maximum $ 12 : map second3 linesWithWidths
+    -- balwidth = maximum $ 12 : map third3 linesWithWidths
+    amtwidth = maximumStrict $ 12 : widths (map itemamt items)
+    balwidth = maximumStrict $ 12 : widths (map itembal items)
+    -- Since postingsReport strips prices from all Amounts when not used, we can display prices.
+    widths = map wbWidth . concatMap (showMixedAmountLinesB oneLine{displayPrice=True})
     itemamt (_,_,_,Posting{pamount=a},_) = a
     itembal (_,_,_,_,a) = a
 
@@ -116,76 +130,70 @@ postingsReportAsText opts (_,items) = unlines $ map (postingsReportItemAsText op
 -- has multiple commodities. Does not yet support formatting control
 -- like balance reports.
 --
-postingsReportItemAsText :: CliOpts -> Int -> Int -> PostingsReportItem -> String
+-- Also returns the natural width (without padding) of the amount and balance
+-- fields.
+postingsReportItemAsText :: CliOpts -> Int -> Int -> PostingsReportItem -> (TB.Builder, Int, Int)
 postingsReportItemAsText opts preferredamtwidth preferredbalwidth (mdate, menddate, mdesc, p, b) =
-  -- use elide*Width to be wide-char-aware
-  -- trace (show (totalwidth, datewidth, descwidth, acctwidth, amtwidth, balwidth)) $
-  intercalate "\n" $
-    concat [fitString (Just datewidth) (Just datewidth) True True date
-           ," "
-           ,fitString (Just descwidth) (Just descwidth) True True desc
-           ,"  "
-           ,fitString (Just acctwidth) (Just acctwidth) True True acct
-           ,"  "
-           ,fitString (Just amtwidth) (Just amtwidth) True False amtfirstline
-           ,"  "
-           ,fitString (Just balwidth) (Just balwidth) True False balfirstline
-           ]
-    :
-    [concat [spacer
-            ,fitString (Just amtwidth) (Just amtwidth) True False a
-            ,"  "
-            ,fitString (Just balwidth) (Just balwidth) True False b
-            ]
-     | (a,b) <- zip amtrest balrest
-     ]
-    where
-      -- calculate widths
-      (totalwidth,mdescwidth) = registerWidthsFromOpts opts
-      (datewidth, date) = case (mdate,menddate) of
-                            (Just _, Just _)   -> (21, showDateSpan (DateSpan mdate menddate))
-                            (Nothing, Just _)  -> (21, "")
-                            (Just d, Nothing)  -> (10, showDate d)
-                            _                  -> (10, "")
-      (amtwidth, balwidth)
-        | shortfall <= 0 = (preferredamtwidth, preferredbalwidth)
-        | otherwise      = (adjustedamtwidth, adjustedbalwidth)
-        where
-          mincolwidth = 2 -- columns always show at least an ellipsis
-          maxamtswidth = max 0 (totalwidth - (datewidth + 1 + mincolwidth + 2 + mincolwidth + 2 + 2))
-          shortfall = (preferredamtwidth + preferredbalwidth) - maxamtswidth
-          amtwidthproportion = fromIntegral preferredamtwidth / fromIntegral (preferredamtwidth + preferredbalwidth)
-          adjustedamtwidth = round $ amtwidthproportion * fromIntegral maxamtswidth
-          adjustedbalwidth = maxamtswidth - adjustedamtwidth
+    (table <> TB.singleton '\n', thisamtwidth, thisbalwidth)
+  where
+    table = renderRowB def{tableBorders=False, borderSpaces=False} . Group NoLine $ map Header
+      [ textCell TopLeft $ fitText (Just datewidth) (Just datewidth) True True date
+      , spacerCell
+      , textCell TopLeft $ fitText (Just descwidth) (Just descwidth) True True desc
+      , spacerCell2
+      , textCell TopLeft $ fitText (Just acctwidth) (Just acctwidth) True True acct
+      , spacerCell2
+      , Cell TopRight $ map (pad amtwidth) amt
+      , spacerCell2
+      , Cell BottomRight $ map (pad balwidth) bal
+      ]
+    spacerCell  = Cell BottomLeft [WideBuilder (TB.singleton ' ') 1]
+    spacerCell2 = Cell BottomLeft [WideBuilder (TB.fromString "  ") 2]
+    pad fullwidth amt = WideBuilder (TB.fromText $ T.replicate w " ") w <> amt
+      where w = fullwidth - wbWidth amt
+    -- calculate widths
+    (totalwidth,mdescwidth) = registerWidthsFromOpts opts
+    (datewidth, date) = case (mdate,menddate) of
+        (Just _, Just _)   -> (21, showDateSpan (DateSpan mdate menddate))
+        (Nothing, Just _)  -> (21, "")
+        (Just d, Nothing)  -> (10, showDate d)
+        _                  -> (10, "")
+    (amtwidth, balwidth)
+      | shortfall <= 0 = (preferredamtwidth, preferredbalwidth)
+      | otherwise      = (adjustedamtwidth, adjustedbalwidth)
+      where
+        mincolwidth = 2 -- columns always show at least an ellipsis
+        maxamtswidth = max 0 (totalwidth - (datewidth + 1 + mincolwidth + 2 + mincolwidth + 2 + 2))
+        shortfall = (preferredamtwidth + preferredbalwidth) - maxamtswidth
+        amtwidthproportion = fromIntegral preferredamtwidth / fromIntegral (preferredamtwidth + preferredbalwidth)
+        adjustedamtwidth = round $ amtwidthproportion * fromIntegral maxamtswidth
+        adjustedbalwidth = maxamtswidth - adjustedamtwidth
 
-      remaining = totalwidth - (datewidth + 1 + 2 + amtwidth + 2 + balwidth)
-      (descwidth, acctwidth)
-        | hasinterval = (0, remaining - 2)
-        | otherwise   = (w, remaining - 2 - w)
-        where
-            hasinterval = isJust menddate
-            w = fromMaybe ((remaining - 2) `div` 2) mdescwidth
+    remaining = totalwidth - (datewidth + 1 + 2 + amtwidth + 2 + balwidth)
+    (descwidth, acctwidth)
+      | hasinterval = (0, remaining - 2)
+      | otherwise   = (w, remaining - 2 - w)
+      where
+        hasinterval = isJust menddate
+        w = fromMaybe ((remaining - 2) `div` 2) mdescwidth
 
-      -- gather content
-      desc = fromMaybe "" mdesc
-      acct = parenthesise $ T.unpack $ elideAccountName awidth $ paccount p
-         where
-          (parenthesise, awidth) =
-            case ptype p of
-              BalancedVirtualPosting -> (\s -> "["++s++"]", acctwidth-2)
-              VirtualPosting         -> (\s -> "("++s++")", acctwidth-2)
-              _                      -> (id,acctwidth)
-      amt = showMixedAmountWithoutPrice $ pamount p
-      bal = showMixedAmountWithoutPrice b
-      -- alternate behaviour, show null amounts as 0 instead of blank
-      -- amt = if null amt' then "0" else amt'
-      -- bal = if null bal' then "0" else bal'
-      (amtlines, ballines) = (lines amt, lines bal)
-      (amtlen, ballen) = (length amtlines, length ballines)
-      numlines = max 1 (max amtlen ballen)
-      (amtfirstline:amtrest) = take numlines $ amtlines ++ repeat "" -- posting amount is top-aligned
-      (balfirstline:balrest) = take numlines $ replicate (numlines - ballen) "" ++ ballines -- balance amount is bottom-aligned
-      spacer = replicate (totalwidth - (amtwidth + 2 + balwidth)) ' '
+    -- gather content
+    desc = fromMaybe "" mdesc
+    acct = parenthesise . elideAccountName awidth $ paccount p
+      where
+        (parenthesise, awidth) = case ptype p of
+            BalancedVirtualPosting -> (wrap "[" "]", acctwidth-2)
+            VirtualPosting         -> (wrap "(" ")", acctwidth-2)
+            _                      -> (id,acctwidth)
+    amt = showamt $ pamount p
+    bal = showamt b
+    -- Since postingsReport strips prices from all Amounts when not used, we can display prices.
+    showamt = showMixedAmountLinesB oneLine{displayColour=color_, displayPrice=True}
+      where ReportOpts{..} = rsOpts $ reportspec_ opts
+    -- Since this will usually be called with the knot tied between this(amt|bal)width and
+    -- preferred(amt|bal)width, make sure the former do not depend on the latter to avoid loops.
+    thisamtwidth = maximumDef 0 $ map wbWidth amt
+    thisbalwidth = maximumDef 0 $ map wbWidth bal
 
 -- tests
 
@@ -193,10 +201,12 @@ tests_Register = tests "Register" [
 
    tests "postingsReportAsText" [
     test "unicode in register layout" $ do
-      j <- io $ readJournal' "2009/01/01 * медвежья шкура\n  расходы:покупки  100\n  актив:наличные\n"
-      let opts = defreportopts
-      (postingsReportAsText defcliopts $ postingsReport opts (queryFromOpts (parsedate "2008/11/26") opts) j) `is` unlines
-        ["2009/01/01 медвежья шкура       расходы:покупки                100           100"
+      j <- readJournal' "2009/01/01 * медвежья шкура\n  расходы:покупки  100\n  актив:наличные\n"
+      let rspec = defreportspec
+      (TL.unpack . postingsReportAsText defcliopts $ postingsReport rspec j)
+        @?=
+        unlines
+        ["2009-01-01 медвежья шкура       расходы:покупки                100           100"
         ,"                                актив:наличные                -100             0"]
    ]
 

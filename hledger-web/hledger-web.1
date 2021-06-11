@@ -1,11 +1,12 @@
 
-.TH "hledger-web" "1" "March 2019" "hledger-web 1.14.99" "hledger User Manuals"
+.TH "HLEDGER-WEB" "1" "March 2021" "hledger-web-1.21.99 " "hledger User Manuals"
 
 
 
 .SH NAME
 .PP
-hledger-web - web interface for the hledger accounting tool
+hledger-web is a web interface (WUI) for the hledger accounting tool.
+This manual is for hledger-web 1.21.99.
 .SH SYNOPSIS
 .PP
 \f[C]hledger-web [OPTIONS]\f[R]
@@ -15,9 +16,9 @@ hledger-web - web interface for the hledger accounting tool
 \f[C]hledger web -- [OPTIONS]\f[R]
 .SH DESCRIPTION
 .PP
-hledger is a cross-platform program for tracking money, time, or any
-other commodity, using double-entry accounting and a simple, editable
-file format.
+hledger is a reliable, cross-platform set of programs for tracking
+money, time, or any other commodity, using double-entry accounting and a
+simple, editable file format.
 hledger is inspired by and largely compatible with ledger(1).
 .PP
 hledger-web is hledger\[aq]s web interface.
@@ -40,7 +41,7 @@ Like hledger, it reads data from one or more files in hledger journal,
 timeclock, timedot, or CSV format specified with \f[C]-f\f[R], or
 \f[C]$LEDGER_FILE\f[R], or \f[C]$HOME/.hledger.journal\f[R] (on windows,
 perhaps \f[C]C:/Users/USER/.hledger.journal\f[R]).
-For more about this see hledger(1), hledger_journal(5) etc.
+For more about this see hledger(1).
 .SH OPTIONS
 .PP
 Command-line options and arguments may be used to set an initial filter
@@ -51,121 +52,160 @@ in addition to any search query entered there.
 Note: if invoking hledger-web as a hledger subcommand, write
 \f[C]--\f[R] before options, as shown in the synopsis above.
 .TP
-.B \f[C]--serve\f[R]
+\f[B]\f[CB]--serve\f[B]\f[R]
 serve and log requests, don\[aq]t browse or auto-exit
 .TP
-.B \f[C]--host=IPADDR\f[R]
+\f[B]\f[CB]--serve-api\f[B]\f[R]
+like --serve, but serve only the JSON web API, without the server-side
+web UI
+.TP
+\f[B]\f[CB]--host=IPADDR\f[B]\f[R]
 listen on this IP address (default: 127.0.0.1)
 .TP
-.B \f[C]--port=PORT\f[R]
+\f[B]\f[CB]--port=PORT\f[B]\f[R]
 listen on this TCP port (default: 5000)
 .TP
-.B \f[C]--base-url=URL\f[R]
+\f[B]\f[CB]--socket=SOCKETFILE\f[B]\f[R]
+use a unix domain socket file to listen for requests instead of a TCP
+socket.
+Implies \f[C]--serve\f[R].
+It can only be used if the operating system can provide this type of
+socket.
+.TP
+\f[B]\f[CB]--base-url=URL\f[B]\f[R]
 set the base url (default: http://IPADDR:PORT).
 You would change this when sharing over the network, or integrating
 within a larger website.
 .TP
-.B \f[C]--file-url=URL\f[R]
+\f[B]\f[CB]--file-url=URL\f[B]\f[R]
 set the static files url (default: BASEURL/static).
 hledger-web normally serves static files itself, but if you wanted to
 serve them from another server for efficiency, you would set the url
 with this.
 .TP
-.B \f[C]--capabilities=CAP[,CAP..]\f[R]
+\f[B]\f[CB]--capabilities=CAP[,CAP..]\f[B]\f[R]
 enable the view, add, and/or manage capabilities (default: view,add)
 .TP
-.B \f[C]--capabilities-header=HTTPHEADER\f[R]
+\f[B]\f[CB]--capabilities-header=HTTPHEADER\f[B]\f[R]
 read capabilities to enable from a HTTP header, like
 X-Sandstorm-Permissions (default: disabled)
+.TP
+\f[B]\f[CB]--test\f[B]\f[R]
+run hledger-web\[aq]s tests and exit.
+hspec test runner args may follow a --, eg: hledger-web --test -- --help
 .PP
 hledger input options:
 .TP
-.B \f[C]-f FILE --file=FILE\f[R]
+\f[B]\f[CB]-f FILE --file=FILE\f[B]\f[R]
 use a different input file.
 For stdin, use - (default: \f[C]$LEDGER_FILE\f[R] or
 \f[C]$HOME/.hledger.journal\f[R])
 .TP
-.B \f[C]--rules-file=RULESFILE\f[R]
+\f[B]\f[CB]--rules-file=RULESFILE\f[B]\f[R]
 Conversion rules file to use when reading CSV (default: FILE.rules)
 .TP
-.B \f[C]--separator=CHAR\f[R]
+\f[B]\f[CB]--separator=CHAR\f[B]\f[R]
 Field separator to expect when reading CSV (default: \[aq],\[aq])
 .TP
-.B \f[C]--alias=OLD=NEW\f[R]
+\f[B]\f[CB]--alias=OLD=NEW\f[B]\f[R]
 rename accounts named OLD to NEW
 .TP
-.B \f[C]--anon\f[R]
+\f[B]\f[CB]--anon\f[B]\f[R]
 anonymize accounts and payees
 .TP
-.B \f[C]--pivot FIELDNAME\f[R]
+\f[B]\f[CB]--pivot FIELDNAME\f[B]\f[R]
 use some other field or tag for the account name
 .TP
-.B \f[C]-I --ignore-assertions\f[R]
-ignore any failing balance assertions
+\f[B]\f[CB]-I --ignore-assertions\f[B]\f[R]
+disable balance assertion checks (note: does not disable balance
+assignments)
+.TP
+\f[B]\f[CB]-s --strict\f[B]\f[R]
+do extra error checking (check that all posted accounts are declared)
 .PP
 hledger reporting options:
 .TP
-.B \f[C]-b --begin=DATE\f[R]
-include postings/txns on or after this date
+\f[B]\f[CB]-b --begin=DATE\f[B]\f[R]
+include postings/txns on or after this date (will be adjusted to
+preceding subperiod start when using a report interval)
 .TP
-.B \f[C]-e --end=DATE\f[R]
-include postings/txns before this date
+\f[B]\f[CB]-e --end=DATE\f[B]\f[R]
+include postings/txns before this date (will be adjusted to following
+subperiod end when using a report interval)
 .TP
-.B \f[C]-D --daily\f[R]
+\f[B]\f[CB]-D --daily\f[B]\f[R]
 multiperiod/multicolumn report by day
 .TP
-.B \f[C]-W --weekly\f[R]
+\f[B]\f[CB]-W --weekly\f[B]\f[R]
 multiperiod/multicolumn report by week
 .TP
-.B \f[C]-M --monthly\f[R]
+\f[B]\f[CB]-M --monthly\f[B]\f[R]
 multiperiod/multicolumn report by month
 .TP
-.B \f[C]-Q --quarterly\f[R]
+\f[B]\f[CB]-Q --quarterly\f[B]\f[R]
 multiperiod/multicolumn report by quarter
 .TP
-.B \f[C]-Y --yearly\f[R]
+\f[B]\f[CB]-Y --yearly\f[B]\f[R]
 multiperiod/multicolumn report by year
 .TP
-.B \f[C]-p --period=PERIODEXP\f[R]
+\f[B]\f[CB]-p --period=PERIODEXP\f[B]\f[R]
 set start date, end date, and/or reporting interval all at once using
-period expressions syntax (overrides the flags above)
+period expressions syntax
 .TP
-.B \f[C]--date2\f[R]
+\f[B]\f[CB]--date2\f[B]\f[R]
 match the secondary date instead (see command help for other effects)
 .TP
-.B \f[C]-U --unmarked\f[R]
+\f[B]\f[CB]-U --unmarked\f[B]\f[R]
 include only unmarked postings/txns (can combine with -P or -C)
 .TP
-.B \f[C]-P --pending\f[R]
+\f[B]\f[CB]-P --pending\f[B]\f[R]
 include only pending postings/txns
 .TP
-.B \f[C]-C --cleared\f[R]
+\f[B]\f[CB]-C --cleared\f[B]\f[R]
 include only cleared postings/txns
 .TP
-.B \f[C]-R --real\f[R]
+\f[B]\f[CB]-R --real\f[B]\f[R]
 include only non-virtual postings
 .TP
-.B \f[C]-NUM --depth=NUM\f[R]
+\f[B]\f[CB]-NUM --depth=NUM\f[B]\f[R]
 hide/aggregate accounts or postings more than NUM levels deep
 .TP
-.B \f[C]-E --empty\f[R]
+\f[B]\f[CB]-E --empty\f[B]\f[R]
 show items with zero amount, normally hidden (and vice-versa in
 hledger-ui/hledger-web)
 .TP
-.B \f[C]-B --cost\f[R]
-convert amounts to their cost at transaction time (using the transaction
-price, if any)
+\f[B]\f[CB]-B --cost\f[B]\f[R]
+convert amounts to their cost/selling amount at transaction time
 .TP
-.B \f[C]-V --value\f[R]
-convert amounts to their market value on the report end date (using the
-most recent applicable market price, if any)
+\f[B]\f[CB]-V --market\f[B]\f[R]
+convert amounts to their market value in default valuation commodities
 .TP
-.B \f[C]--auto\f[R]
+\f[B]\f[CB]-X --exchange=COMM\f[B]\f[R]
+convert amounts to their market value in commodity COMM
+.TP
+\f[B]\f[CB]--value\f[B]\f[R]
+convert amounts to cost or market value, more flexibly than -B/-V/-X
+.TP
+\f[B]\f[CB]--infer-market-prices\f[B]\f[R]
+use transaction prices (recorded with \[at] or \[at]\[at]) as additional
+market prices, as if they were P directives
+.TP
+\f[B]\f[CB]--auto\f[B]\f[R]
 apply automated posting rules to modify transactions.
 .TP
-.B \f[C]--forecast\f[R]
-apply periodic transaction rules to generate future transactions, to 6
-months from now or report end date.
+\f[B]\f[CB]--forecast\f[B]\f[R]
+generate future transactions from periodic transaction rules, for the
+next 6 months or till report end date.
+In hledger-ui, also make ordinary future transactions visible.
+.TP
+\f[B]\f[CB]--color=WHEN (or --colour=WHEN)\f[B]\f[R]
+Should color-supporting commands use ANSI color codes in text output.
+\[aq]auto\[aq] (default): whenever stdout seems to be a color-supporting
+terminal.
+\[aq]always\[aq] or \[aq]yes\[aq]: always, useful eg when piping output
+into \[aq]less -R\[aq].
+\[aq]never\[aq] or \[aq]no\[aq]: never.
+A NO_COLOR environment variable overrides this.
 .PP
 When a reporting option appears more than once in the command line, the
 last one takes precedence.
@@ -174,13 +214,19 @@ Some reporting options can also be written as query arguments.
 .PP
 hledger help options:
 .TP
-.B \f[C]-h --help\f[R]
-show general usage (or after COMMAND, command usage)
+\f[B]\f[CB]-h --help\f[B]\f[R]
+show general or COMMAND help
 .TP
-.B \f[C]--version\f[R]
-show version
+\f[B]\f[CB]--man\f[B]\f[R]
+show general or COMMAND user manual with man
 .TP
-.B \f[C]--debug[=N]\f[R]
+\f[B]\f[CB]--info\f[B]\f[R]
+show general or COMMAND user manual with info
+.TP
+\f[B]\f[CB]--version\f[B]\f[R]
+show general or ADDONCMD version
+.TP
+\f[B]\f[CB]--debug[=N]\f[B]\f[R]
 show debug output (levels 1-9, default: 1)
 .PP
 A \[at]FILE argument will be expanded to the contents of FILE, which
@@ -194,6 +240,8 @@ open in a browser window, and will exit after two minutes of inactivity
 (no requests and no browser windows viewing it).
 With \f[C]--serve\f[R], it just runs the web app without exiting, and
 logs requests to the console.
+With \f[C]--serve-api\f[R], only the JSON web api (see below) is served,
+with the usual HTML server-side web UI disabled.
 .PP
 By default the server listens on IP address 127.0.0.1, accessible only
 to local requests.
@@ -202,6 +250,26 @@ to listen on all configured addresses.
 .PP
 Similarly, use \f[C]--port\f[R] to set a TCP port other than 5000, eg if
 you are running multiple hledger-web instances.
+.PP
+Both of these options are ignored when \f[C]--socket\f[R] is used.
+In this case, it creates an \f[C]AF_UNIX\f[R] socket file at the
+supplied path and uses that for communication.
+This is an alternative way of running multiple hledger-web instances
+behind a reverse proxy that handles authentication for different users.
+The path can be derived in a predictable way, eg by using the username
+within the path.
+As an example, \f[C]nginx\f[R] as reverse proxy can use the variable
+\f[C]$remote_user\f[R] to derive a path from the username used in a HTTP
+basic authentication.
+The following \f[C]proxy_pass\f[R] directive allows access to all
+\f[C]hledger-web\f[R] instances that created a socket in
+\f[C]/tmp/hledger/\f[R]:
+.IP
+.nf
+\f[C]
+  proxy_pass http://unix:/tmp/hledger/${remote_user}.socket;
+\f[R]
+.fi
 .PP
 You can use \f[C]--base-url\f[R] to change the protocol, hostname, port
 and path that appear in hyperlinks, useful eg for integrating
@@ -276,57 +344,219 @@ edit it directly, outside of hledger-web), and it will show the new data
 when you reload the page or navigate to a new page.
 If a change makes a file unparseable, hledger-web will display an error
 message until the file has been fixed.
+.PP
+(Note: if you are viewing files mounted from another machine, make sure
+that both machine clocks are roughly in step.)
 .SH JSON API
 .PP
-In addition to the web UI, hledger-web provides some API routes that
-serve JSON in response to GET requests.
-Currently these are same ones provided by the hledger-api tool, but
-hledger-web will likely receive more attention than hledger-api in
-future:
+In addition to the web UI, hledger-web also serves a JSON API that can
+be used to get data or add new transactions.
+If you want the JSON API only, you can use the \f[C]--serve-api\f[R]
+flag.
+Eg:
 .IP
 .nf
 \f[C]
+$ hledger-web -f examples/sample.journal --serve-api
+\&...
+\f[R]
+.fi
+.PP
+You can get JSON data from these routes:
+.IP
+.nf
+\f[C]
+/version
 /accountnames
 /transactions
 /prices
 /commodities
 /accounts
-/accounttransactions/#AccountName
+/accounttransactions/ACCOUNTNAME
 \f[R]
 .fi
 .PP
-Also, you can append a new transaction to the journal by sending a PUT
-request to \f[C]/add\f[R] (hledger-web only).
-As with the web UI\[aq]s add form, hledger-web must be started with the
-\f[C]add\f[R] capability for this (enabled by default).
-.PP
-The payload should be a valid hledger transaction as JSON, similar to
-what you get from \f[C]/transactions\f[R] or
-\f[C]/accounttransactions\f[R].
-.PP
-Another way to generate test data is with the
-\f[C]readJsonFile\f[R]/\f[C]writeJsonFile\f[R] helpers in
-Hledger.Web.Json, which read or write any of hledger\[aq]s JSON-capable
-types from or to a file.
-Eg here we write the first transaction of a sample journal:
+Eg, all account names in the journal (similar to the accounts command).
+(hledger-web\[aq]s JSON does not include newlines, here we use python to
+prettify it):
 .IP
 .nf
 \f[C]
-$ make ghci-web
->>> :m +*Hledger.Web.Json
+$ curl -s http://127.0.0.1:5000/accountnames | python -m json.tool
+[
+    \[dq]assets\[dq],
+    \[dq]assets:bank\[dq],
+    \[dq]assets:bank:checking\[dq],
+    \[dq]assets:bank:saving\[dq],
+    \[dq]assets:cash\[dq],
+    \[dq]expenses\[dq],
+    \[dq]expenses:food\[dq],
+    \[dq]expenses:supplies\[dq],
+    \[dq]income\[dq],
+    \[dq]income:gifts\[dq],
+    \[dq]income:salary\[dq],
+    \[dq]liabilities\[dq],
+    \[dq]liabilities:debts\[dq]
+]
+\f[R]
+.fi
+.PP
+Or all transactions:
+.IP
+.nf
+\f[C]
+$ curl -s http://127.0.0.1:5000/transactions | python -m json.tool
+[
+    {
+        \[dq]tcode\[dq]: \[dq]\[dq],
+        \[dq]tcomment\[dq]: \[dq]\[dq],
+        \[dq]tdate\[dq]: \[dq]2008-01-01\[dq],
+        \[dq]tdate2\[dq]: null,
+        \[dq]tdescription\[dq]: \[dq]income\[dq],
+        \[dq]tindex\[dq]: 1,
+        \[dq]tpostings\[dq]: [
+            {
+                \[dq]paccount\[dq]: \[dq]assets:bank:checking\[dq],
+                \[dq]pamount\[dq]: [
+                    {
+                        \[dq]acommodity\[dq]: \[dq]$\[dq],
+                        \[dq]aismultiplier\[dq]: false,
+                        \[dq]aprice\[dq]: null,
+\&...
+\f[R]
+.fi
+.PP
+Most of the JSON corresponds to hledger\[aq]s data types; for details of
+what the fields mean, see the Hledger.Data.Json haddock docs and click
+on the various data types, eg Transaction.
+And for a higher level understanding, see the journal manual.
+.PP
+In some cases there is outer JSON corresponding to a \[dq]Report\[dq]
+type.
+To understand that, go to the Hledger.Web.Handler.MiscR haddock and look
+at the source for the appropriate handler to see what it returns.
+Eg for \f[C]/accounttransactions\f[R] it\[aq]s getAccounttransactionsR,
+returning a \[dq]\f[C]accountTransactionsReport ...\f[R]\[dq].
+Looking up the haddock for that we can see that /accounttransactions
+returns an AccountTransactionsReport, which consists of a report title
+and a list of AccountTransactionsReportItem (etc).
+.PP
+You can add a new transaction to the journal with a PUT request to
+\f[C]/add\f[R], if hledger-web was started with the \f[C]add\f[R]
+capability (enabled by default).
+The payload must be the full, exact JSON representation of a hledger
+transaction (partial data won\[aq]t do).
+You can get sample JSON from hledger-web\[aq]s \f[C]/transactions\f[R]
+or \f[C]/accounttransactions\f[R], or you can export it with
+hledger-lib, eg like so:
+.IP
+.nf
+\f[C]
+\&.../hledger$ stack ghci hledger-lib
 >>> writeJsonFile \[dq]txn.json\[dq] (head $ jtxns samplejournal)
 >>> :q
-$ python -m json.tool <txn.json >txn.pretty.json  # optional: make human-readable
 \f[R]
 .fi
 .PP
-(sample output & discussion)
-.PP
-And here\[aq]s how to test adding that with curl:
+Here\[aq]s how it looks as of hledger-1.17 (remember, this JSON
+corresponds to hledger\[aq]s Transaction and related data types):
 .IP
 .nf
 \f[C]
-$ curl -s http://127.0.0.1:5000/add -X PUT -H \[aq]Content-Type: application/json\[aq] --data-binary \[at]txn.pretty.json; echo
+{
+    \[dq]tcomment\[dq]: \[dq]\[dq],
+    \[dq]tpostings\[dq]: [
+        {
+            \[dq]pbalanceassertion\[dq]: null,
+            \[dq]pstatus\[dq]: \[dq]Unmarked\[dq],
+            \[dq]pamount\[dq]: [
+                {
+                    \[dq]aprice\[dq]: null,
+                    \[dq]acommodity\[dq]: \[dq]$\[dq],
+                    \[dq]aquantity\[dq]: {
+                        \[dq]floatingPoint\[dq]: 1,
+                        \[dq]decimalPlaces\[dq]: 10,
+                        \[dq]decimalMantissa\[dq]: 10000000000
+                    },
+                    \[dq]aismultiplier\[dq]: false,
+                    \[dq]astyle\[dq]: {
+                        \[dq]ascommodityside\[dq]: \[dq]L\[dq],
+                        \[dq]asdigitgroups\[dq]: null,
+                        \[dq]ascommodityspaced\[dq]: false,
+                        \[dq]asprecision\[dq]: 2,
+                        \[dq]asdecimalpoint\[dq]: \[dq].\[dq]
+                    }
+                }
+            ],
+            \[dq]ptransaction_\[dq]: \[dq]1\[dq],
+            \[dq]paccount\[dq]: \[dq]assets:bank:checking\[dq],
+            \[dq]pdate\[dq]: null,
+            \[dq]ptype\[dq]: \[dq]RegularPosting\[dq],
+            \[dq]pcomment\[dq]: \[dq]\[dq],
+            \[dq]pdate2\[dq]: null,
+            \[dq]ptags\[dq]: [],
+            \[dq]poriginal\[dq]: null
+        },
+        {
+            \[dq]pbalanceassertion\[dq]: null,
+            \[dq]pstatus\[dq]: \[dq]Unmarked\[dq],
+            \[dq]pamount\[dq]: [
+                {
+                    \[dq]aprice\[dq]: null,
+                    \[dq]acommodity\[dq]: \[dq]$\[dq],
+                    \[dq]aquantity\[dq]: {
+                        \[dq]floatingPoint\[dq]: -1,
+                        \[dq]decimalPlaces\[dq]: 10,
+                        \[dq]decimalMantissa\[dq]: -10000000000
+                    },
+                    \[dq]aismultiplier\[dq]: false,
+                    \[dq]astyle\[dq]: {
+                        \[dq]ascommodityside\[dq]: \[dq]L\[dq],
+                        \[dq]asdigitgroups\[dq]: null,
+                        \[dq]ascommodityspaced\[dq]: false,
+                        \[dq]asprecision\[dq]: 2,
+                        \[dq]asdecimalpoint\[dq]: \[dq].\[dq]
+                    }
+                }
+            ],
+            \[dq]ptransaction_\[dq]: \[dq]1\[dq],
+            \[dq]paccount\[dq]: \[dq]income:salary\[dq],
+            \[dq]pdate\[dq]: null,
+            \[dq]ptype\[dq]: \[dq]RegularPosting\[dq],
+            \[dq]pcomment\[dq]: \[dq]\[dq],
+            \[dq]pdate2\[dq]: null,
+            \[dq]ptags\[dq]: [],
+            \[dq]poriginal\[dq]: null
+        }
+    ],
+    \[dq]ttags\[dq]: [],
+    \[dq]tsourcepos\[dq]: {
+        \[dq]tag\[dq]: \[dq]JournalSourcePos\[dq],
+        \[dq]contents\[dq]: [
+            \[dq]\[dq],
+            [
+                1,
+                1
+            ]
+        ]
+    },
+    \[dq]tdate\[dq]: \[dq]2008-01-01\[dq],
+    \[dq]tcode\[dq]: \[dq]\[dq],
+    \[dq]tindex\[dq]: 1,
+    \[dq]tprecedingcomment\[dq]: \[dq]\[dq],
+    \[dq]tdate2\[dq]: null,
+    \[dq]tdescription\[dq]: \[dq]income\[dq],
+    \[dq]tstatus\[dq]: \[dq]Unmarked\[dq]
+}
+\f[R]
+.fi
+.PP
+And here\[aq]s how to test adding it with curl.
+This should add a new entry to your journal:
+.IP
+.nf
+\f[C]
+$ curl http://127.0.0.1:5000/add -X PUT -H \[aq]Content-Type: application/json\[aq] --data-binary \[at]txn.json
 \f[R]
 .fi
 .SH ENVIRONMENT
@@ -335,6 +565,27 @@ $ curl -s http://127.0.0.1:5000/add -X PUT -H \[aq]Content-Type: application/jso
 \f[C]-f\f[R].
 Default: \f[C]\[ti]/.hledger.journal\f[R] (on windows, perhaps
 \f[C]C:/Users/USER/.hledger.journal\f[R]).
+.PP
+A typical value is \f[C]\[ti]/DIR/YYYY.journal\f[R], where DIR is a
+version-controlled finance directory and YYYY is the current year.
+Or \f[C]\[ti]/DIR/current.journal\f[R], where current.journal is a
+symbolic link to YYYY.journal.
+.PP
+On Mac computers, you can set this and other environment variables in a
+more thorough way that also affects applications started from the GUI
+(say, an Emacs dock icon).
+Eg on MacOS Catalina I have a \f[C]\[ti]/.MacOSX/environment.plist\f[R]
+file containing
+.IP
+.nf
+\f[C]
+{
+  \[dq]LEDGER_FILE\[dq] : \[dq]\[ti]/finance/current.journal\[dq]
+}
+\f[R]
+.fi
+.PP
+To see the effect you may need to \f[C]killall Dock\f[R], or reboot.
 .SH FILES
 .PP
 Reads data from one or more files in hledger journal, timeclock,
@@ -364,13 +615,9 @@ Simon Michael <simon@joyful.com> and contributors
 
 .SH COPYRIGHT
 
-Copyright (C) 2007-2016 Simon Michael.
+Copyright (C) 2007-2020 Simon Michael.
 .br
 Released under GNU GPL v3 or later.
 
 .SH SEE ALSO
-hledger(1), hledger\-ui(1), hledger\-web(1), hledger\-api(1),
-hledger_csv(5), hledger_journal(5), hledger_timeclock(5), hledger_timedot(5),
-ledger(1)
-
-http://hledger.org
+hledger(1), hledger\-ui(1), hledger\-web(1), ledger(1)

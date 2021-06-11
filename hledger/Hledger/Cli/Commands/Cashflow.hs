@@ -1,5 +1,7 @@
-{-# LANGUAGE QuasiQuotes, RecordWildCards #-}
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes       #-}
+{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE TemplateHaskell   #-}
 {-|
 
 The @cashflow@ command prints a simplified cashflow statement.  It just
@@ -27,7 +29,8 @@ cashflowSpec = CompoundBalanceCommandSpec {
      CBCSubreportSpec{
       cbcsubreporttitle="Cash flows"
      ,cbcsubreportquery=journalCashAccountQuery
-     ,cbcsubreportnormalsign=NormallyPositive
+     ,cbcsubreportoptions=(\ropts -> ropts{normalbalance_= Just NormallyPositive})
+     ,cbcsubreporttransform=id
      ,cbcsubreportincreasestotal=True
      }
     ],

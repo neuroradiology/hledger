@@ -1,15 +1,18 @@
 name: hledger-lib
-version: 1.14.99
-synopsis: Core data types, parsers and functionality for the hledger accounting tools
+version: 1.21.99
+synopsis: A reusable library providing the core functionality of hledger
 description: |
-  This is a reusable library containing hledger's core functionality.
+  A reusable library containing hledger's core functionality.
+  This is used by most hledger* packages so that they support the same
+  common file formats, command line options, reports etc.
 
-  hledger is a cross-platform program for tracking money, time, or
-  any other commodity, using double-entry accounting and a simple,
-  editable file format. It is inspired by and largely compatible
-  with ledger(1).  hledger provides command-line, curses and web
-  interfaces, and aims to be a reliable, practical tool for daily
-  use.
+  hledger is a robust, cross-platform set of tools for tracking money,
+  time, or any other commodity, using double-entry accounting and a
+  simple, editable file format, with command-line, terminal and web
+  interfaces. It is a Haskell rewrite of Ledger, and one of the leading
+  implementations of Plain Text Accounting. Read more at:
+  <https://hledger.org>
+
 category: Finance
 license: GPL-3
 author: Simon Michael <simon@joyful.com>
@@ -18,74 +21,60 @@ github: simonmichael/hledger
 homepage: http://hledger.org
 bug-reports: http://bugs.hledger.org
 stability: stable
-tested-with: GHC==7.10.3, GHC==8.0.2, GHC==8.2.2, GHC==8.4.3, GHC==8.6.3
+tested-with: GHC==8.6.5, GHC==8.8.4, GHC==8.10.4
 
 extra-source-files:
 - CHANGES.md
-- README
-- hledger_csv.5
-- hledger_csv.txt
-- hledger_csv.info
-- hledger_journal.5
-- hledger_journal.txt
-- hledger_journal.info
-- hledger_timedot.5
-- hledger_timedot.txt
-- hledger_timedot.info
-- hledger_timeclock.5
-- hledger_timeclock.txt
-- hledger_timeclock.info
+- README.md
+- test/unittest.hs
+- test/doctests.hs
 
 #data-files:
 
 dependencies:
-- base >=4.8 && <4.13
-- base-compat-batteries >=0.10.1 && <0.11
-- ansi-terminal >=0.6.2.3
+- base >=4.10.1.0 && <4.16
+- base-compat-batteries >=0.10.1 && <0.12
+- aeson >=1
+- aeson-pretty
+- ansi-terminal >=0.9
 - array
 - blaze-markup >=0.5.1
 - bytestring
 - call-stack
 - cmdargs >=0.10
-- containers
+- containers >=0.5.9
 - cassava
 - cassava-megaparsec
 - data-default >=0.5
-- Decimal
-- deepseq
+- Decimal >=0.5.1
 - directory
-- easytest >= 0.2.1 && <0.3
 - file-embed >=0.0.10
 - filepath
 - hashtables >=1.2.3.1
-- megaparsec >=7.0.0 && <8
-- mtl
-- mtl-compat
+- megaparsec >=7.0.0 && <9.1
+- mtl >=2.2.1
 - old-time
-- parsec >=3
 - parser-combinators >=0.4.0
-- pretty-show >=1.6.4
+- pretty-simple >4 && <5
 - regex-tdfa
 - safe >=0.2
-- split >=0.1
 - tabular >=0.2
+- tasty >=1.2.3
+- tasty-hunit >=0.10.0.2
 - template-haskell
 - text >=1.2
 - time >=1.5
+- timeit
 - transformers >=0.2
+- unordered-containers >=0.2
 - uglymemo
 - utf8-string >=0.3.5
-- extra
+- extra >=1.6.3
 - Glob >= 0.9
 # for ledger-parse:
 #- parsers >=0.5
 #- system-filepath
 #- trifecta >=0.91
-
-when:
-- condition: (!impl(ghc >= 8.0))
-  dependencies:
-  - semigroups == 0.18.*
 
 ghc-options:
 - -Wall
@@ -109,8 +98,8 @@ library:
   - Hledger.Data.Commodity
   - Hledger.Data.Dates
   - Hledger.Data.Journal
+  - Hledger.Data.Json
   - Hledger.Data.Ledger
-  - Hledger.Data.Prices
   - Hledger.Data.Period
   - Hledger.Data.PeriodicTransaction
   - Hledger.Data.StringFormat
@@ -120,6 +109,7 @@ library:
   - Hledger.Data.Transaction
   - Hledger.Data.TransactionModifier
   - Hledger.Data.Types
+  - Hledger.Data.Valuation
   - Hledger.Query
   - Hledger.Read
   - Hledger.Read.Common
@@ -135,7 +125,7 @@ library:
   - Hledger.Reports.BalanceReport
   - Hledger.Reports.BudgetReport
   - Hledger.Reports.EntriesReport
-  - Hledger.Reports.MultiBalanceReports
+  - Hledger.Reports.MultiBalanceReport
   - Hledger.Reports.PostingsReport
   - Hledger.Reports.TransactionsReport
   - Hledger.Utils
@@ -152,29 +142,42 @@ library:
 #  other-modules:
 #  - Ledger.Parser.Text
 
+# "cabal test hledger-lib" currently fails, see doctest suite below
 tests:
 
-  doctests:
-    main: doctests.hs
+  unittest:
+    buildable: true
     source-dirs: test
+    main: unittest.hs
+    other-modules: []  # prevent double compilation, https://github.com/sol/hpack/issues/188
+    dependencies:
+    - hledger-lib
+
+  # Note when run by cabal, doctest requires a ghc environment file,
+  # so we ensure this is generated, see cabal.project.
+  # https://github.com/simonmichael/hledger/issues/1139
+  doctest:
+    source-dirs: test
+    main: doctests.hs  # can't call it doctest.hs ("File name does not match module name")
+    other-modules: []  # prevent double compilation, https://github.com/sol/hpack/issues/188
     dependencies:
     - Glob >=0.7
-    # Use a doctest new enough to support --fast and --verbose.
-    - doctest >=0.16
-    # Note: doctest with ghc 8.4+ on mac breaks, needs this workaround:
+    # Need a doctest new enough to support --fast and --verbose and ghc 8.10.
+    - doctest >=0.16.3
+
+    # ghc 8.4+ on mac needs this workaround (see
+    # https://github.com/sol/doctest/issues/199,
+    # https://ghc.haskell.org/trac/ghc/ticket/15105#comment:10):
     #  ~$ locate HSinteger-gmp-1.0.2.0.o
     #  /Users/simon/.stack/programs/x86_64-osx/ghc-8.4.3/lib/ghc-8.4.2/integer-gmp-1.0.2.0/HSinteger-gmp-1.0.2.0.o
     #  ~$ mv /Users/simon/.stack/programs/x86_64-osx/ghc-8.4.3/lib/ghc-8.4.2/integer-gmp-1.0.2.0/HSinteger-gmp-1.0.2.0.o{,_DISABLE_GHC_ISSUE_15105}
-    # See https://github.com/sol/doctest/issues/199,
-    # https://ghc.haskell.org/trac/ghc/ticket/15105#comment:10 .
-    # Should probably disable it by default, but I think my testing convenience
-    # outweighs the small number of folks who'll hit this.. if I'm wrong let me know.
+    # Should probably disable it by default:
     #when:
     # - condition: os(darwin) && impl(ghc >= 8.4)
     #   buildable: false
 
-  easytests:
-    main: easytests.hs
-    source-dirs: test
-    dependencies:
-    - hledger-lib
+    # ghc 8.0 on linux gives Hledger/Read/JournalReader.hs:126: failure in expression `rejp (journalp <* eof) "2015/1/1\n a  0\n"' ... Variable not in scope: rejp :: f0 a0 -> [Char] -> t
+    # must use one conditional here, https://github.com/sol/hpack/issues/379
+    when:
+    - condition: (impl(ghc < 8.2))
+      buildable: false

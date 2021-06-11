@@ -5,16 +5,18 @@ related utilities used by hledger commands.
 
 -}
 
-{-# LANGUAGE CPP, ScopedTypeVariables, DeriveDataTypeable, FlexibleContexts, TypeFamilies, OverloadedStrings, PackageImports #-}
+{-# LANGUAGE CPP, ScopedTypeVariables, FlexibleContexts, TypeFamilies, OverloadedStrings, PackageImports #-}
 
 module Hledger.Cli.CliOptions (
 
   -- * cmdargs flags & modes
   helpflags,
   detailedversionflag,
+  flattreeflags,
+  hiddenflags,
   inputflags,
   reportflags,
-  outputflags,
+  -- outputflags,
   outputFormatFlag,
   outputFileFlag,
   generalflagsgroup1,
@@ -34,12 +36,10 @@ module Hledger.Cli.CliOptions (
   CliOpts(..),
   defcliopts,
   getHledgerCliOpts,
-  decodeRawOpts,
+  getHledgerCliOpts',
   rawOptsToCliOpts,
-  checkCliOpts,
   outputFormats,
   defaultOutputFormat,
-  defaultBalanceLineFormat,
   CommandDoc,
 
   -- possibly these should move into argsToCliOpts
@@ -54,8 +54,6 @@ module Hledger.Cli.CliOptions (
   replaceNumericFlags,
   -- | For register:
   registerWidthsFromOpts,
-  -- | For balance:
-  lineFormatFromOpts,
 
   -- * Other utils
   hledgerAddons,
@@ -73,8 +71,10 @@ import qualified Control.Exception as C
 import Control.Monad (when)
 import Data.Char
 import Data.Default
+import Data.Either (isRight)
 import Data.Functor.Identity (Identity)
 import "base-compat-batteries" Data.List.Compat
+import Data.List.Extra (nubSort)
 import Data.List.Split (splitOneOf)
 import Data.Ord
 import Data.Maybe
@@ -106,13 +106,16 @@ import Hledger.Cli.Version
 -- | Common help flags: --help, --debug, --version...
 helpflags :: [Flag RawOpts]
 helpflags = [
-  flagNone ["help","h"] (setboolopt "help") "show general usage (or after CMD, command usage)"
+  -- XXX why are these duplicated in defCommandMode below ?
+  flagNone ["help","h"] (setboolopt "help") "show general help (or after CMD, command help)"
+ ,flagNone ["man"] (setboolopt "man") "Show user manual with man"
+ ,flagNone ["info"] (setboolopt "info") "Show info manual with info"
  -- ,flagNone ["browse-args"] (setboolopt "browse-args") "use a web UI to select options and build up a command line"
  ,flagReq  ["debug"]    (\s opts -> Right $ setopt "debug" s opts) "[N]" "show debug output (levels 1-9, default: 1)"
  ,flagNone ["version"] (setboolopt "version") "show version information"
  ]
 
--- | A hidden flag, just for the hledger executable.
+-- | A hidden flag just for the hledger executable.
 detailedversionflag :: Flag RawOpts
 detailedversionflag = flagNone ["version+"] (setboolopt "version+") "show version information with extra detail"
 
@@ -121,11 +124,11 @@ inputflags :: [Flag RawOpts]
 inputflags = [
   flagReq  ["file","f"]      (\s opts -> Right $ setopt "file" s opts) "FILE" "use a different input file. For stdin, use - (default: $LEDGER_FILE or $HOME/.hledger.journal)"
  ,flagReq  ["rules-file"]    (\s opts -> Right $ setopt "rules-file" s opts) "RFILE" "CSV conversion rules file (default: FILE.rules)"
- ,flagReq  ["separator"]     (\s opts -> Right $ setopt "separator" s opts) "SEP" "CSV separator (default: ,)"
  ,flagReq  ["alias"]         (\s opts -> Right $ setopt "alias" s opts)  "OLD=NEW" "rename accounts named OLD to NEW"
  ,flagNone ["anon"]          (setboolopt "anon") "anonymize accounts and payees"
  ,flagReq  ["pivot"]         (\s opts -> Right $ setopt "pivot" s opts)  "TAGNAME" "use some other field/tag for account names"
  ,flagNone ["ignore-assertions","I"] (setboolopt "ignore-assertions") "ignore any balance assertions"
+ ,flagNone ["strict","s"]    (setboolopt "strict") "do extra error checking (check that all posted accounts are declared)"
  ]
 
 -- | Common report-related flags: --period, --cost, etc.
@@ -133,15 +136,15 @@ reportflags :: [Flag RawOpts]
 reportflags = [
 
   -- report period & interval
-  flagReq  ["begin","b"]     (\s opts -> Right $ setopt "begin" s opts) "DATE" "include postings/txns on or after this date"
- ,flagReq  ["end","e"]       (\s opts -> Right $ setopt "end" s opts) "DATE" "include postings/txns before this date"
+  flagReq  ["begin","b"]     (\s opts -> Right $ setopt "begin" s opts) "DATE" "include postings/txns on or after this date (will be adjusted to preceding subperiod start when using a report interval)"
+ ,flagReq  ["end","e"]       (\s opts -> Right $ setopt "end" s opts) "DATE" "include postings/txns before this date (will be adjusted to following subperiod end when using a report interval)"
  ,flagNone ["daily","D"]     (setboolopt "daily") "multiperiod/multicolumn report by day"
  ,flagNone ["weekly","W"]    (setboolopt "weekly") "multiperiod/multicolumn report by week"
  ,flagNone ["monthly","M"]   (setboolopt "monthly") "multiperiod/multicolumn report by month"
  ,flagNone ["quarterly","Q"] (setboolopt "quarterly") "multiperiod/multicolumn report by quarter"
  ,flagNone ["yearly","Y"]    (setboolopt "yearly") "multiperiod/multicolumn report by year"
- ,flagReq  ["period","p"]    (\s opts -> Right $ setopt "period" s opts) "PERIODEXP" "set start date, end date, and/or report interval all at once (overrides the flags above)"
- ,flagNone ["date2"]         (setboolopt "date2") "match the secondary date instead (see command help for other effects)"
+ ,flagReq  ["period","p"]    (\s opts -> Right $ setopt "period" s opts) "PERIODEXP" "set start date, end date, and/or report interval all at once"
+ ,flagNone ["date2"]         (setboolopt "date2") "match the secondary date instead. See command help for other effects. (--effective, --aux-date also accepted)"  -- see also hiddenflags
 
   -- status/realness/depth/zero filters
  ,flagNone ["unmarked","U"]  (setboolopt "unmarked") "include only unmarked postings/txns (can combine with -P or -C)"
@@ -153,41 +156,84 @@ reportflags = [
 
   -- valuation
  ,flagNone ["B","cost"]      (setboolopt "B")
-   "show amounts converted to cost commodity, same as --value=cost"
+   "show amounts converted to their cost/selling amount, using the transaction price."
  ,flagNone ["V","market"]    (setboolopt "V")
    (unwords
-     ["show amounts converted to default valuation commodity,"
-     ,"same as --value=now (single period reports)"
-     ,"or --value=end (multiperiod reports)"  -- TODO
+     ["show amounts converted to period-end market value in their default valuation commodity."
+     ,"Equivalent to --value=end."
      ])
- -- TODO: -X
- -- ,flagReq ["X"]              (\s opts -> Right $ setopt "X" s opts) "COMM"
- --   (unwords
- --     ["show amounts converted to this commodity"
- --     ,"same as --value=now,COMM (single period reports)"
- --     ,"or --value=end,COMM (multiperiod reports)"
- --     ])
- -- ,flagReq  ["value"]         (\s opts -> Right $ setopt "value" s opts) "TYPE[,COMM]"
- ,flagReq  ["value"]         (\s opts -> Right $ setopt "value" s opts) "TYPE"
+ ,flagReq ["X","exchange"]   (\s opts -> Right $ setopt "X" s opts) "COMM"
+   (unwords
+     ["show amounts converted to current (single period reports)"
+     ,"or period-end (multiperiod reports) market value in the specified commodity."
+     ,"Equivalent to --value=end,COMM."
+     ])
+ ,flagReq  ["value"]         (\s opts -> Right $ setopt "value" s opts) "TYPE[,COMM]"
    (unlines
-     ["TYPE is cost, end, now, or YYYY-MM-DD."
-     ,"Show amounts converted to:"
-     ,"- cost commodity using transaction prices"  -- "(then optionally to COMM using market prices at posting date)"
-     ,"- default valuation commodity using market prices at period end(s)"  -- "(or COMM)"
-     ,"- default valuation commodity using current market prices"
-     ,"- default valuation commodity using market prices on some date"
+     ["show amounts converted with valuation TYPE, and optionally to specified commodity COMM. TYPE can be:"
+     ,"'then': convert to contemporaneous market value, in default valuation commodity or COMM (print & register commands only)"
+     ,"'end':  convert to period-end market value, in default valuation commodity or COMM"
+     ,"'now':  convert to current market value, in default valuation commodity or COMM"
+     ,"YYYY-MM-DD: convert to market value on the given date, in default valuation commodity or COMM"
      ])
+  -- XXX infer-value renamed to infer-market-price and deprecated 2021-02
+ ,flagNone ["infer-market-price","infer-value"]   (setboolopt "infer-market-price") 
+    "use transaction prices (recorded with @ or @@) as additional market prices, as if they were P directives"
 
   -- generated postings/transactions
  ,flagNone ["auto"]          (setboolopt "auto") "apply automated posting rules to modify transactions"
- ,flagNone ["forecast"]      (setboolopt "forecast") "apply periodic transaction rules to generate future transactions, to 6 months from now or report end date"
+ ,flagOpt "" ["forecast"]    (\s opts -> Right $ setopt "forecast" s opts) "PERIODEXP" 
+  (unlines
+   [ "Generate periodic transactions (from periodic transaction rules). By default these begin after the latest recorded transaction, and end 6 months from today, or at the report end date."
+   , "Also, in hledger-ui, make future transactions visible."
+   , "Note that = (and not a space) is required before PERIODEXP if you wish to supply it."
+   ])
 
+  -- general output-related
+  
+  -- This has special support in hledger-lib:colorOption, keep synced
+ ,flagReq  ["color","colour"] (\s opts -> Right $ setopt "color" s opts) "WHEN"
+   (unlines
+     ["Should color-supporting commands use ANSI color codes in text output."
+     ,"'auto' (default): whenever stdout seems to be a color-supporting terminal."
+     ,"'always' or 'yes': always, useful eg when piping output into 'less -R'."
+     ,"'never' or 'no': never."
+     ,"A NO_COLOR environment variable overrides this."
+     ])
+ ]
+
+-- | Flags for selecting flat/tree mode, used for reports organised by account.
+-- With a True argument, shows some extra help about inclusive/exclusive amounts.
+flattreeflags :: Bool -> [Flag RawOpts]
+flattreeflags showamounthelp = [
+   flagNone ["flat","l"] (setboolopt "flat")
+     ("show accounts as a flat list (default)"
+      ++ if showamounthelp then ". Amounts exclude subaccount amounts, except where the account is depth-clipped." else "")
+  ,flagNone ["tree","t"] (setboolopt "tree")
+    ("show accounts as a tree" ++ if showamounthelp then ". Amounts include subaccount amounts." else "")
+  ]
+
+-- | Common flags that are accepted but not shown in --help,
+-- such as --effective, --aux-date.
+hiddenflags :: [Flag RawOpts]
+hiddenflags = [
+  flagNone ["effective","aux-date"] (setboolopt "date2") "Ledger-compatible aliases for --date2"
  ]
 
 -- | Common output-related flags: --output-file, --output-format...
-outputflags = [outputFormatFlag, outputFileFlag]
-outputFormatFlag = flagReq  ["output-format","O"] (\s opts -> Right $ setopt "output-format" s opts) "FMT" "select the output format. Supported formats:\ntxt, csv, html."
-outputFileFlag   = flagReq  ["output-file","o"]   (\s opts -> Right $ setopt "output-file" s opts) "FILE" "write output to FILE. A file extension matching one of the above formats selects that format."
+
+-- outputflags = [outputFormatFlag, outputFileFlag]
+
+outputFormatFlag :: [String] -> Flag RawOpts
+outputFormatFlag fmts = flagReq
+  ["output-format","O"] (\s opts -> Right $ setopt "output-format" s opts) "FMT"
+  ("select the output format. Supported formats:\n" ++ intercalate ", " fmts ++ ".")
+
+-- This has special support in hledger-lib:outputFileOption, keep synced
+outputFileFlag :: Flag RawOpts
+outputFileFlag = flagReq
+  ["output-file","o"] (\s opts -> Right $ setopt "output-file" s opts) "FILE"
+  "write output to FILE. A file extension matching one of the above formats selects that format."
 
 argsFlag :: FlagHelp -> Arg RawOpts
 argsFlag desc = flagArg (\s opts -> Right $ setopt "args" s opts) desc
@@ -217,7 +263,7 @@ defMode = Mode {
    ,groupHidden  = []             --  flags not displayed in the usage
    }
  ,modeArgs        = ([], Nothing) -- description of arguments accepted by the command
- ,modeValue       = []            -- value returned when this mode is used to parse a command line
+ ,modeValue       = def           -- value returned when this mode is used to parse a command line
  ,modeCheck       = Right         -- whether the mode's value is correct
  ,modeReform      = const Nothing -- function to convert the value back to a command line arguments
  ,modeExpandAt    = True          -- expand @ arguments for program ?
@@ -233,13 +279,15 @@ defCommandMode names = defMode {
   ,modeGroupFlags  = Group {
      groupNamed   = []
     ,groupUnnamed = [
-       flagNone ["help"] (setboolopt "help") "Show usage."
+        flagNone ["help"] (setboolopt "help") "Show command-line help"
       -- ,flagNone ["help"] (setboolopt "help") "Show long help."
+       ,flagNone ["man"] (setboolopt "man") "Show user manual with man"
+       ,flagNone ["info"] (setboolopt "info") "Show info manual with info"
       ]
     ,groupHidden  = []             --  flags not displayed in the usage
     }
   ,modeArgs = ([], Just $ argsFlag "[QUERY]")
-  ,modeValue=[("command", headDef "" names)]
+  ,modeValue=setopt "command" (headDef "" names) def
   }
 
 -- | A cmdargs mode representing the hledger add-on command with the
@@ -262,8 +310,8 @@ addonCommandMode name = (defCommandMode [name]) {
      --  ]
   ,modeGroupFlags = Group {
       groupUnnamed = []
-     ,groupHidden = []
-     ,groupNamed = [generalflagsgroup1]
+     ,groupHidden  = hiddenflags
+     ,groupNamed   = [generalflagsgroup1]
      }
   }
 
@@ -275,11 +323,11 @@ type CommandDoc = String
 -- from a help template and flag/argument specifications.
 -- Reduces boilerplate a little, though the complicated cmdargs
 -- flag and argument specs are still required.
-hledgerCommandMode :: CommandDoc -> [Flag RawOpts] -> [(String, [Flag RawOpts])] 
+hledgerCommandMode :: CommandDoc -> [Flag RawOpts] -> [(String, [Flag RawOpts])]
   -> [Flag RawOpts] -> ([Arg RawOpts], Maybe (Arg RawOpts)) -> Mode RawOpts
 hledgerCommandMode doc unnamedflaggroup namedflaggroups hiddenflaggroup argsdescr =
   case parseCommandDoc doc of
-    Nothing -> error' $ "Could not parse command doc:\n"++doc++"\n"
+    Nothing -> error' $ "Could not parse command doc:\n"++doc++"\n"  -- PARTIAL:
     Just (names, shorthelp, longhelplines) ->
       (defCommandMode names) {
          modeHelp        = shorthelp
@@ -296,9 +344,9 @@ hledgerCommandMode doc unnamedflaggroup namedflaggroups hiddenflaggroup argsdesc
 --
 -- - First line: the command name then any aliases, as one or more space or comma-separated words
 --
--- - Second line to a line containing just _FLAGS_, or the end: the short help
+-- - Second line to a line containing just _FLAGS, or the end: the short help
 --
--- - Any lines after _FLAGS_: the long help (split into lines for cmdargs)
+-- - Any lines after _FLAGS: the long help (split into lines for cmdargs)
 --
 -- The CLI help displays the short help, then the cmdargs-generated
 -- flags list, then the long help (which some day we might make
@@ -312,7 +360,7 @@ parseCommandDoc t =
     (l:ls) -> Just (names, shorthelp, longhelplines)
       where
         names = words $ map (\c -> if c `elem` [',','\\'] then ' ' else c) l
-        (shorthelpls, longhelpls) = break (== "_FLAGS_") ls
+        (shorthelpls, longhelpls) = break (== "_FLAGS") ls
         shorthelp = unlines $ reverse $ dropWhile null $ reverse shorthelpls
         longhelplines = dropWhile null $ drop 1 longhelpls
 
@@ -322,13 +370,12 @@ showModeUsage = (showText defaultWrap :: [Text] -> String) .
                (helpText [] HelpFormatDefault :: Mode a -> [Text])
 
 -- | Get the most appropriate documentation topic for a mode.
--- Currently, that is either the hledger, hledger-ui, hledger-web or
--- hledger-api manual.
+-- Currently, that is either the hledger, hledger-ui or hledger-web
+-- manual.
 topicForMode :: Mode a -> Topic
 topicForMode m
   | n == "hledger-ui"  = "ui"
   | n == "hledger-web" = "web"
-  --  | n == "hledger-api" = lookupDocTxt "api" -- hledger-api uses docopt
   | otherwise          = "cli"
   where n = headDef "" $ modeNames m
 
@@ -360,7 +407,7 @@ data CliOpts = CliOpts {
     ,command_         :: String
     ,file_            :: [FilePath]
     ,inputopts_       :: InputOpts
-    ,reportopts_      :: ReportOpts
+    ,reportspec_      :: ReportSpec
     ,output_file_     :: Maybe FilePath
     ,output_format_   :: Maybe String
     ,debug_           :: Int            -- ^ debug level, set by @--debug[=N]@. See also 'Hledger.Utils.debugLevel'.
@@ -370,34 +417,31 @@ data CliOpts = CliOpts {
                                         -- 1. the COLUMNS env var, if set
                                         -- 2. the width reported by the terminal, if supported
                                         -- 3. the default (80)
- } deriving (Show, Data, Typeable)
+ } deriving (Show)
 
 instance Default CliOpts where def = defcliopts
 
 defcliopts :: CliOpts
 defcliopts = CliOpts
-    def
-    def
-    def
-    def
-    def
-    def
-    def
-    def
-    def
-    def
-    defaultWidth
-
--- | Convert possibly encoded option values to regular unicode strings.
-decodeRawOpts :: RawOpts -> RawOpts
-decodeRawOpts = map (\(name',val) -> (name', fromSystemString val))
+    { rawopts_         = def
+    , command_         = ""
+    , file_            = []
+    , inputopts_       = def
+    , reportspec_      = def
+    , output_file_     = Nothing
+    , output_format_   = Nothing
+    , debug_           = 0
+    , no_new_accounts_ = False
+    , width_           = Nothing
+    , available_width_ = defaultWidth
+    }
 
 -- | Default width for hledger console output, when not otherwise specified.
 defaultWidth :: Int
 defaultWidth = 80
 
 -- | Replace any numeric flags (eg -2) with their long form (--depth 2),
--- as I'm guessing cmdargs doesn't support this directly.  
+-- as I'm guessing cmdargs doesn't support this directly.
 replaceNumericFlags :: [String] -> [String]
 replaceNumericFlags = map replace
   where
@@ -409,9 +453,9 @@ replaceNumericFlags = map replace
 -- today's date. Parsing failures will raise an error.
 -- Also records the terminal width, if supported.
 rawOptsToCliOpts :: RawOpts -> IO CliOpts
-rawOptsToCliOpts rawopts = checkCliOpts <$> do
+rawOptsToCliOpts rawopts = do
   let iopts = rawOptsToInputOpts rawopts
-  ropts <- rawOptsToReportOpts rawopts
+  rspec <- rawOptsToReportSpec rawopts
   mcolumns <- readMay <$> getEnvSafe "COLUMNS"
   mtermwidth <-
 #ifdef mingw32_HOST_OS
@@ -424,31 +468,21 @@ rawOptsToCliOpts rawopts = checkCliOpts <$> do
   return defcliopts {
               rawopts_         = rawopts
              ,command_         = stringopt "command" rawopts
-             ,file_            = map (T.unpack . stripquotes . T.pack) $ listofstringopt "file" rawopts
+             ,file_            = listofstringopt "file" rawopts
              ,inputopts_       = iopts
-             ,reportopts_      = ropts
+             ,reportspec_      = rspec
              ,output_file_     = maybestringopt "output-file" rawopts
              ,output_format_   = maybestringopt "output-format" rawopts
-             ,debug_           = intopt "debug" rawopts
+             ,debug_           = posintopt "debug" rawopts
              ,no_new_accounts_ = boolopt "no-new-accounts" rawopts -- add
              ,width_           = maybestringopt "width" rawopts
              ,available_width_ = availablewidth
              }
 
--- | Do final validation of processed opts, raising an error if there is trouble.
-checkCliOpts :: CliOpts -> CliOpts
-checkCliOpts opts =
-  either usageError (const opts) $ do
-    -- XXX move to checkReportOpts or move _format to CliOpts
-    case lineFormatFromOpts $ reportopts_ opts of
-      Left err -> Left $ "could not parse format option: "++err
-      Right _  -> Right ()
-  -- XXX check registerWidthsFromOpts opts
-
--- | A helper for addon commands: this parses options and arguments from 
--- the current command line using the given hledger-style cmdargs mode, 
--- and returns a CliOpts. Or, with --help or -h present, it prints 
--- long or short help, and exits the program. 
+-- | A helper for addon commands: this parses options and arguments from
+-- the current command line using the given hledger-style cmdargs mode,
+-- and returns a CliOpts. Or, with --help or -h present, it prints
+-- long or short help, and exits the program.
 -- When --debug is present, also prints some debug output.
 -- Note this is not used by the main hledger executable.
 --
@@ -465,13 +499,12 @@ checkCliOpts opts =
 -- hledger options not displayed.
 --
 -- Tips:
--- Empty lines in the pre/postamble are removed by cmdargs; 
+-- Empty lines in the pre/postamble are removed by cmdargs;
 -- add a space character to preserve them.
 --
-getHledgerCliOpts :: Mode RawOpts -> IO CliOpts
-getHledgerCliOpts mode' = do
-  args' <- getArgs >>= expandArgsAt
-  let rawopts = either usageError decodeRawOpts $ process mode' args'
+getHledgerCliOpts' :: Mode RawOpts -> [String] -> IO CliOpts
+getHledgerCliOpts' mode' args' = do
+  let rawopts = either usageError id $ process mode' args'
   opts <- rawOptsToCliOpts rawopts
   debugArgs args' opts
   when ("help" `inRawOpts` rawopts_ opts) $ putStr shorthelp >> exitSuccess
@@ -494,8 +527,12 @@ getHledgerCliOpts mode' = do
         putStrLn $ "running: " ++ progname'
         putStrLn $ "raw args: " ++ show args'
         putStrLn $ "processed opts:\n" ++ show opts
-        d <- getCurrentDay
-        putStrLn $ "search query: " ++ show (queryFromOpts d $ reportopts_ opts)
+        putStrLn $ "search query: " ++ show (rsQuery $ reportspec_ opts)
+
+getHledgerCliOpts :: Mode RawOpts -> IO CliOpts
+getHledgerCliOpts mode' = do
+  args' <- getArgs >>= expandArgsAt
+  getHledgerCliOpts' mode' args' 
 
 -- CliOpts accessors
 
@@ -520,17 +557,19 @@ expandPathPreservingPrefix d prefixedf = do
     Just p  -> p ++ ":" ++ f'
     Nothing -> f'
 
--- | Get the expanded, absolute output file path from options,
--- or the default (-, meaning stdout).
-outputFileFromOpts :: CliOpts -> IO FilePath
+-- | Get the expanded, absolute output file path specified by an
+-- -o/--output-file options, or nothing, meaning stdout.
+outputFileFromOpts :: CliOpts -> IO (Maybe FilePath)
 outputFileFromOpts opts = do
   d <- getCurrentDirectory
   case output_file_ opts of
-    Just p  -> expandPath d p
-    Nothing -> return "-"
+    Nothing -> return Nothing
+    Just f  -> Just <$> expandPath d f
 
+defaultOutputFormat :: String
 defaultOutputFormat = "txt"
 
+outputFormats :: [String]
 outputFormats =
   [defaultOutputFormat] ++
   ["csv"
@@ -600,22 +639,6 @@ registerWidthsFromOpts CliOpts{width_=Just s}  =
           eof
           return (totalwidth, descwidth)
 
--- for balance, currently:
-
--- | Parse the format option if provided, possibly returning an error,
--- otherwise get the default value.
-lineFormatFromOpts :: ReportOpts -> Either String StringFormat
-lineFormatFromOpts = maybe (Right defaultBalanceLineFormat) parseStringFormat . format_
-
--- | Default line format for balance report: "%20(total)  %2(depth_spacer)%-(account)"
-defaultBalanceLineFormat :: StringFormat
-defaultBalanceLineFormat = BottomAligned [
-      FormatField False (Just 20) Nothing TotalField
-    , FormatLiteral "  "
-    , FormatField True (Just 2) Nothing DepthSpacerField
-    , FormatField True Nothing Nothing AccountField
-    ]
-
 -- Other utils
 
 -- | Get the sorted unique canonical names of hledger addon commands
@@ -633,7 +656,7 @@ defaultBalanceLineFormat = BottomAligned [
 -- or more versions (or two versions that don't look like a
 -- source/compiled pair), they are all included, with file extensions
 -- intact.
--- 
+--
 hledgerAddons :: IO [String]
 hledgerAddons = do
   -- past bug generator
@@ -647,20 +670,20 @@ hledgerAddons = do
 stripPrognamePrefix = drop (length progname + 1)
 
 dropRedundantSourceVersion [f,g]
-  | takeExtension f `elem` compiledExts = [f]
-  | takeExtension g `elem` compiledExts = [g]
+  | map toLower (takeExtension f) `elem` compiledExts = [f]
+  | map toLower (takeExtension g) `elem` compiledExts = [g]
 dropRedundantSourceVersion fs = fs
 
-compiledExts = ["",".com",".exe"] 
+compiledExts = ["",".com",".exe"]
 
 
--- | Get all sorted unique filenames in the current user's PATH. 
+-- | Get all sorted unique filenames in the current user's PATH.
 -- We do not currently filter out non-file objects or files without execute permission.
 likelyExecutablesInPath :: IO [String]
 likelyExecutablesInPath = do
   pathdirs <- splitOneOf "[:;]" `fmap` getEnvSafe "PATH"
   pathfiles <- concat `fmap` mapM getDirectoryContentsSafe pathdirs
-  return $ nub $ sort pathfiles
+  return $ nubSort pathfiles
   -- exclude directories and files without execute permission.
   -- These will do a stat for each hledger-*, probably ok.
   -- But they need paths, not just filenames
@@ -670,8 +693,8 @@ likelyExecutablesInPath = do
 
 -- | Get the sorted unique filenames of all hledger-* executables in
 -- the current user's PATH. These are files in any of the PATH directories,
--- named hledger-*, with either no extension (and no periods in the name) 
--- or one of the addonExtensions. 
+-- named hledger-*, with either no extension (and no periods in the name)
+-- or one of the addonExtensions.
 -- We do not currently filter out non-file objects or files without execute permission.
 hledgerExecutablesInPath :: IO [String]
 hledgerExecutablesInPath = filter isHledgerExeName <$> likelyExecutablesInPath

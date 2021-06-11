@@ -4,32 +4,48 @@
 module Hledger.Cli.Commands.Tags (
   tagsmode
  ,tags
-) 
+)
 where
 
-import Data.List
+import qualified Control.Monad.Fail as Fail
+import Data.List.Extra (nubSort)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Safe
+import System.Console.CmdArgs.Explicit as C
 import Hledger
 import Hledger.Cli.CliOptions
 
 tagsmode = hledgerCommandMode
   $(embedFileRelative "Hledger/Cli/Commands/Tags.txt")
-  [] -- [flagNone ["strict"] (setboolopt "strict") "makes date comparing strict"] -- 
+  [flagNone ["values"] (setboolopt "values") "list tag values instead of tag names"
+  ,flagNone ["parsed"] (setboolopt "parsed") "show tags/values in the order they were parsed, including duplicates"
+  ]
   [generalflagsgroup1]
-  []
+  hiddenflags
   ([], Just $ argsFlag "[TAGREGEX [QUERY...]]")
 
-tags CliOpts{rawopts_=rawopts,reportopts_=ropts} j = do
+tags :: CliOpts -> Journal -> IO ()
+tags CliOpts{rawopts_=rawopts,reportspec_=rspec} j = do
   d <- getCurrentDay
+  let args = listofstringopt "args" rawopts
+  mtagpat <- mapM (either Fail.fail pure . toRegexCI . T.pack) $ headMay args
   let
-    args      = listofstringopt "args" rawopts
-    mtagpats  = headMay args
-    queryargs = drop 1 args
-    q = queryFromOpts d $ ropts{query_ = unwords queryargs} 
-    txns = filter (q `matchesTransaction`) $ jtxns $ journalSelectingAmountFromOpts ropts j
-    tags = 
-      nub $ sort $ 
-      (maybe id (filter . regexMatchesCI) mtagpats) $ 
-      map (T.unpack . fst) $ concatMap transactionAllTags txns
-  mapM_ putStrLn tags
+    querystring = map T.pack $ drop 1 args
+    values      = boolopt "values" rawopts
+    parsed      = boolopt "parsed" rawopts
+    empty       = empty_ $ rsOpts rspec
+
+  argsquery <- either usageError (return . fst) $ parseQueryList d querystring
+  let
+    q = simplifyQuery $ And [queryFromFlags $ rsOpts rspec, argsquery]
+    txns = filter (q `matchesTransaction`) $ jtxns $ journalApplyValuationFromOpts rspec j
+    tagsorvalues =
+      (if parsed then id else nubSort)
+      [ r
+      | (t,v) <- concatMap transactionAllTags txns
+      , maybe True (`regexMatchText` t) mtagpat
+      , let r = if values then v else t
+      , not (values && T.null v && not empty)
+      ]
+  mapM_ T.putStrLn tagsorvalues

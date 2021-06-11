@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -13,14 +12,14 @@ module Hledger.Web.Widget.AddForm
 
 import Control.Monad.State.Strict (evalStateT)
 import Data.Bifunctor (first)
-import Data.List (dropWhileEnd, nub, sort, unfoldr)
+import Data.Foldable (toList)
+import Data.List (dropWhileEnd, intercalate, unfoldr)
 import Data.Maybe (isJust)
-import Data.Semigroup ((<>))
+import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (Day)
 import Text.Blaze.Internal (Markup, preEscapedString)
-import Text.JSON
 import Text.Megaparsec (bundleErrors, eof, parseErrorTextPretty, runParser)
 import Yesod
 
@@ -30,11 +29,7 @@ import Hledger.Web.Settings (widgetFile)
 addModal ::
      ( MonadWidget m
      , r ~ Route (HandlerSite m)
-#if MIN_VERSION_yesod(1,6,0)
      , m ~ WidgetFor (HandlerSite m)
-#else
-     , m ~ WidgetT (HandlerSite m) IO
-#endif
      , RenderMessage (HandlerSite m) FormMessage
      )
   => r -> Journal -> Day -> m ()
@@ -57,11 +52,7 @@ addForm ::
   => Journal
   -> Day
   -> Markup
-#if MIN_VERSION_yesod(1,6,0)
   -> MForm m (FormResult Transaction, WidgetFor site ())
-#else
-  -> MForm m (FormResult Transaction, WidgetT site IO ())
-#endif
 addForm j today = identifyForm "add" $ \extra -> do
   (dateRes, dateView) <- mreq dateField dateFS Nothing
   (descRes, descView) <- mreq textField descFS Nothing
@@ -69,13 +60,12 @@ addForm j today = identifyForm "add" $ \extra -> do
   (amtRes, _) <- mreq listField amtFS Nothing
   let (postRes, displayRows) = validatePostings acctRes amtRes
 
-  let descriptions = sort $ nub $ tdescription <$> jtxns j
-      escapeJSSpecialChars = regexReplaceCI "</script>" "<\\/script>" -- #236
-      listToJsonValueObjArrayStr = preEscapedString . escapeJSSpecialChars .
-        encode . JSArray . fmap (\a -> JSObject $ toJSObject [("value", showJSON a)])
+  -- bindings used in add-form.hamlet
+  let descriptions = foldMap S.fromList [journalPayeesDeclaredOrUsed j, journalDescriptions j]
       journals = fst <$> jfiles j
 
   pure (validateTransaction dateRes descRes postRes, $(widgetFile "add-form"))
+
   where
     dateFS = FieldSettings "date" Nothing Nothing (Just "date")
       [("class", "form-control input-lg"), ("placeholder", "Date")]
@@ -90,9 +80,28 @@ addForm j today = identifyForm "add" $ \extra -> do
 
     listField = Field
       { fieldParse = const . pure . Right . Just . dropWhileEnd T.null
-      , fieldView = error "Don't render using this!"
+      , fieldView = error "Don't render using this!"  -- PARTIAL:
       , fieldEnctype = UrlEncoded
       }
+
+    -- Used in add-form.hamlet
+    toBloodhoundJson :: [Text] -> Markup
+    toBloodhoundJson ts =
+      -- This used to work, but since 1.16, it seems like something changed.
+      -- toJSON ("a"::Text) gives String "a" instead of "a", etc.
+      -- preEscapedString . escapeJSSpecialChars . show . toJSON
+      preEscapedString $ concat [
+        "[",
+        intercalate "," $ map (
+          ("{\"value\":" ++).
+          (++"}").
+          show .
+          -- avoid https://github.com/simonmichael/hledger/issues/236
+          T.replace "</script>" "<\\/script>"
+          ) ts,
+        "]"
+        ]
+      where
 
 validateTransaction ::
      FormResult Day
@@ -101,7 +110,7 @@ validateTransaction ::
   -> FormResult Transaction
 validateTransaction dateRes descRes postingsRes =
   case makeTransaction <$> dateRes <*> descRes <*> postingsRes of
-    FormSuccess txn -> case balanceTransaction Nothing txn of
+    FormSuccess txn -> case balanceTransaction balancingOpts txn of
       Left e -> FormFailure [T.pack e]
       Right txn' -> FormSuccess txn'
     x -> x
@@ -137,13 +146,13 @@ validatePostings acctRes amtRes = let
   zipRow (Left e) (Left e') = Left (Just e, Just e')
   zipRow (Left e) (Right _) = Left (Just e, Nothing)
   zipRow (Right _) (Left e) = Left (Nothing, Just e)
-  zipRow (Right acct) (Right amt) = Right (nullposting {paccount = acct, pamount = Mixed [amt]})
+  zipRow (Right acct) (Right amt) = Right (nullposting {paccount = acct, pamount = mixedAmount amt})
 
   errorToFormMsg = first (("Invalid value: " <>) . T.pack .
                           foldl (\s a -> s <> parseErrorTextPretty a) "" .
                           bundleErrors)
   checkAccount = errorToFormMsg . runParser (accountnamep <* eof) "" . T.strip
-  checkAmount = errorToFormMsg . runParser (evalStateT (amountp <* eof) mempty) "" . T.strip
+  checkAmount = errorToFormMsg . runParser (evalStateT (amountp <* eof) nulljournal) "" . T.strip
 
   -- Add errors to forms with zero or one rows if the form is not a FormMissing
   result :: [(Text, Text, Either (Maybe Text, Maybe Text) Posting)]

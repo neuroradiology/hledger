@@ -1,16 +1,36 @@
 close, equity
 Prints a "closing balances" transaction and an "opening balances"
 transaction that bring account balances to and from zero, respectively.
-Useful for bringing asset/liability balances forward into a new journal
-file, or for closing out revenues/expenses to retained earnings at the
-end of a period.
+These can be added to your journal file(s), eg to bring asset/liability
+balances forward into a new journal file, or to close out
+revenues/expenses to retained earnings at the end of a period.
 
-_FLAGS_
+_FLAGS
 
-The closing transaction transfers balances to "equity:closing balances".
-The opening transaction transfers balances from "equity:opening
-balances". You can choose to print just one of the transactions by using
-the --opening or --closing flag.
+You can print just one of these transactions by using the --close or
+--open flag. You can customise their descriptions with the --close-desc
+and --open-desc options.
+
+One amountless posting to "equity:opening/closing balances" is added to
+balance the transactions, by default. You can customise this account
+name with --close-acct and --open-acct; if you specify only one of
+these, it will be used for both.
+
+With --x/--explicit, the equity posting's amount will be shown. And if
+it involves multiple commodities, a posting for each commodity will be
+shown, as with the print command.
+
+With --interleaved, the equity postings are shown next to the postings
+they balance, which makes troubleshooting easier.
+
+By default, transaction prices in the journal are ignored when
+generating the closing/opening transactions. With --show-costs, this
+cost information is preserved (balance -B reports will be unchanged
+after the transition). Separate postings are generated for each cost in
+each commodity. Note this can generate very large journal entries, if
+you have many foreign currency or investment transactions.
+
+close usage
 
 If you split your journal files by time (eg yearly), you will typically
 run this command at the end of the year, and save the closing
@@ -43,14 +63,12 @@ command with --auto, the balance assertions will probably always require
 
 Examples:
 
-Carrying asset/liability balances into a new file for 2019, all from
-command line:
+Carrying asset/liability balances into a new file for 2019:
 
-_Warning: we use >> here to append; be careful not to type a single >
-which would wipe your journal!_
-
-$ hledger close -f 2018.journal -e 2019 assets liabilities --opening >>2019.journal
-$ hledger close -f 2018.journal -e 2019 assets liabilities --closing >>2018.journal
+$ hledger close -f 2018.journal -e 2019 assets liabilities --open
+    # (copy/paste the output to the start of your 2019 journal file)
+$ hledger close -f 2018.journal -e 2019 assets liabilities --close
+    # (copy/paste the output to the end of your 2018 journal file)
 
 Now:
 

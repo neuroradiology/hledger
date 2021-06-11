@@ -1,16 +1,17 @@
 incomestatement, is
-This command displays a simple income statement, showing revenues and
-expenses during a period. It assumes that these accounts are under a
-top-level revenue or income or expense account (case insensitive, plural
-forms also allowed). Note this report shows all account balances with
-normal positive sign (like conventional financial statements, unlike
-balance/print/register) (experimental).
 
-_FLAGS_
+This command displays an income statement, showing revenues and expenses
+during one or more periods. Amounts are shown with normal positive sign,
+as in conventional financial statements.
 
-This command displays a simple income statement. It currently assumes
-that you have top-level accounts named income (or revenue) and expense
-(plural forms also allowed.)
+_FLAGS
+
+The revenue and expense accounts shown are those accounts declared with
+the Revenue or Expense type, or otherwise all accounts under a top-level
+revenue or income or expense account (case insensitive, plurals
+allowed).
+
+Example:
 
 $ hledger incomestatement
 Income Statement
@@ -33,10 +34,12 @@ Total:
 --------------------
                    0
 
-With a reporting interval, multiple columns will be shown, one for each
-report period. Normally incomestatement shows revenues/expenses per
-period, though as with multicolumn balance reports you can alter the
-report mode with --change/--cumulative/--historical.
+This command is a higher-level variant of the balance command, and
+supports many of that command's features, such as multi-period reports.
+It is similar to hledger balance '(revenues|income)' expenses, but with
+smarter account detection, and revenues/income displayed with their sign
+flipped.
 
-This command also supports output destination and output format
-selection.
+This command also supports the output destination and output format
+options The output formats supported are txt, csv, html, and
+(experimental) json.

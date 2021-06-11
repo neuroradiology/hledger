@@ -1,11 +1,18 @@
-register, reg, r
+register, reg
 Show postings and their running total.
 
-_FLAGS_
+_FLAGS
 
-The register command displays postings in date order, one per line, and
-their running total. This is typically used with a query selecting a
-particular account, to see that account's activity:
+The register command displays matched postings, across all accounts, in
+date order, with their running total or running historical balance. (See
+also the aregister command, which shows matched transactions in a
+specific account.)
+
+register normally shows line per posting, but note that multi-commodity
+amounts will occupy multiple lines (one line per commodity).
+
+It is typically used with a query selecting a particular account, to see
+that account's activity:
 
 $ hledger register checking
 2008/01/01 income               assets:bank:checking            $1           $1
@@ -32,7 +39,7 @@ the whole report period). This flag implies --empty (see below). It is
 affected by --historical. It works best when showing just one account
 and one commodity.
 
-The --related/-r flag shows the _other_ postings in the transactions of
+The --related/-r flag shows the other postings in the transactions of
 the postings which would normally be shown.
 
 The --invert flag negates all amounts. For example, it can be used on an
@@ -103,5 +110,6 @@ $ export COLUMNS=100; hledger reg # set till session end (or window resize)
 $ hledger reg -w 100,40           # set overall width 100, description width 40
 $ hledger reg -w $COLUMNS,40      # use terminal width, & description width 40
 
-This command also supports output destination and output format
-selection.
+This command also supports the output destination and output format
+options The output formats supported are txt, csv, and (experimental)
+json.

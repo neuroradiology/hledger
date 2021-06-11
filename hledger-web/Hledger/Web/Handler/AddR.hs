@@ -19,15 +19,17 @@ import Yesod
 import Hledger
 import Hledger.Cli.Commands.Add (appendToJournalFileOrStdout, journalAddTransaction)
 import Hledger.Web.Import
-import Hledger.Web.Json ()
 import Hledger.Web.WebOptions (WebOpts(..))
 import Hledger.Web.Widget.AddForm (addForm)
 
 getAddR :: Handler ()
-getAddR = postAddR
+getAddR = do
+  checkServerSideUiEnabled
+  postAddR
 
 postAddR :: Handler ()
 postAddR = do
+  checkServerSideUiEnabled
   VD{caps, j, today} <- getViewData
   when (CapAdd `notElem` caps) (permissionDenied "Missing the 'add' capability")
 
@@ -55,7 +57,7 @@ postAddR = do
       |]
 
 -- Add a single new transaction, send as JSON via PUT, to the journal.
--- The web form handler above should probably use PUT as well.  
+-- The web form handler above should probably use PUT as well.
 putAddR :: Handler RepJson
 putAddR = do
   VD{caps, j, opts} <- getViewData
@@ -66,4 +68,4 @@ putAddR = do
     Error err -> sendStatusJSON status400 ("could not parse json: " ++ err ::String)
     Success t -> do
       void $ liftIO $ journalAddTransaction j (cliopts_ opts) t
-      sendResponseCreated TransactionsR 
+      sendResponseCreated TransactionsR

@@ -1,5 +1,3 @@
-{-# LANGUAGE DeriveDataTypeable, StandaloneDeriving, DeriveGeneric, TypeSynonymInstances, FlexibleInstances, OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
 {-|
 
 Most data types are defined here to avoid import cycles.
@@ -18,44 +16,65 @@ For more detailed documentation on each type, see the corresponding modules.
 
 -}
 
+-- {-# LANGUAGE DeriveAnyClass #-}  -- https://hackage.haskell.org/package/deepseq-1.4.4.0/docs/Control-DeepSeq.html#v:rnf
+{-# LANGUAGE DeriveGeneric        #-}
+{-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE OverloadedStrings    #-}
+{-# LANGUAGE RecordWildCards      #-}
+{-# LANGUAGE StandaloneDeriving   #-}
+
 module Hledger.Data.Types
 where
 
 import GHC.Generics (Generic)
-import Control.DeepSeq (NFData)
-import Data.Data
 import Data.Decimal
 import Data.Default
 import Data.Functor (($>))
 import Data.List (intercalate)
 import Text.Blaze (ToMarkup(..))
---XXX https://hackage.haskell.org/package/containers/docs/Data-Map.html 
+--XXX https://hackage.haskell.org/package/containers/docs/Data-Map.html
 --Note: You should use Data.Map.Strict instead of this module if:
 --You will eventually need all the values stored.
 --The stored values don't represent large virtual data structures to be lazily computed.
 import qualified Data.Map as M
+import Data.Ord (comparing)
 import Data.Text (Text)
--- import qualified Data.Text as T
 import Data.Time.Calendar
 import Data.Time.LocalTime
+import Data.Word (Word8)
 import System.Time (ClockTime(..))
-import Text.Printf
 
 import Hledger.Utils.Regex
 
 
--- | A possibly incomplete date, whose missing parts will be filled from a reference date.
--- A numeric year, month, and day of month, or the empty string for any of these.
--- See the smartdate parser.
-type SmartDate = (String,String,String)
+-- | A possibly incomplete year-month-day date provided by the user, to be
+-- interpreted as either a date or a date span depending on context. Missing
+-- parts "on the left" will be filled from the provided reference date, e.g. if
+-- the year and month are missing, the reference date's year and month are used.
+-- Missing parts "on the right" are assumed, when interpreting as a date, to be
+-- 1, (e.g. if the year and month are present but the day is missing, it means
+-- first day of that month); or when interpreting as a date span, to be a
+-- wildcard (so it would mean all days of that month). See the `smartdate`
+-- parser for more examples.
+--
+-- Or, one of the standard periods and an offset relative to the reference date:
+-- (last|this|next) (day|week|month|quarter|year), where "this" means the period
+-- containing the reference date.
+data SmartDate
+  = SmartAssumeStart Year (Maybe (Month, Maybe MonthDay))
+  | SmartFromReference (Maybe Month) MonthDay
+  | SmartMonth Month
+  | SmartRelative SmartSequence SmartInterval
+  deriving (Show)
+
+data SmartSequence = Last | This | Next deriving (Show)
+data SmartInterval = Day | Week | Month | Quarter | Year deriving (Show)
 
 data WhichDate = PrimaryDate | SecondaryDate deriving (Eq,Show)
 
-data DateSpan = DateSpan (Maybe Day) (Maybe Day) deriving (Eq,Ord,Data,Generic,Typeable)
+data DateSpan = DateSpan (Maybe Day) (Maybe Day) deriving (Eq,Ord,Generic)
 
 instance Default DateSpan where def = DateSpan Nothing Nothing
-
-instance NFData DateSpan
 
 -- synonyms for various date-related scalars
 type Year = Integer
@@ -68,7 +87,7 @@ type MonthDay = Int  -- 1-31
 type WeekDay = Int   -- 1-7
 
 -- Typical report periods (spans of time), both finite and open-ended.
--- A richer abstraction than DateSpan.
+-- A higher-level abstraction than DateSpan.
 data Period =
     DayPeriod Day
   | WeekPeriod Day
@@ -79,7 +98,7 @@ data Period =
   | PeriodFrom Day
   | PeriodTo Day
   | PeriodAll
-  deriving (Eq,Ord,Show,Data,Generic,Typeable)
+  deriving (Eq,Ord,Show,Generic)
 
 instance Default Period where def = PeriodAll
 
@@ -90,7 +109,7 @@ instance Default Period where def = PeriodAll
 --   MonthLong
 --   QuarterLong
 --   YearLong
---  deriving (Eq,Ord,Show,Data,Generic,Typeable)
+--  deriving (Eq,Ord,Show,Generic)
 
 -- Ways in which a period can be divided into subperiods.
 data Interval =
@@ -107,11 +126,11 @@ data Interval =
   -- WeekOfYear Int
   -- MonthOfYear Int
   -- QuarterOfYear Int
-  deriving (Eq,Show,Ord,Data,Generic,Typeable)
+  deriving (Eq,Show,Ord,Generic)
 
 instance Default Interval where def = NoInterval
 
-instance NFData Interval
+type Payee = Text
 
 type AccountName = Text
 
@@ -121,9 +140,8 @@ data AccountType =
   | Equity
   | Revenue
   | Expense
-  deriving (Show,Eq,Ord,Data,Generic)
-
-instance NFData AccountType
+  | Cash  -- ^ a subtype of Asset - liquid assets to show in cashflow report
+  deriving (Show,Eq,Ord,Generic)
 
 -- not worth the trouble, letters defined in accountdirectivep for now
 --instance Read AccountType
@@ -137,49 +155,55 @@ instance NFData AccountType
 
 data AccountAlias = BasicAlias AccountName AccountName
                   | RegexAlias Regexp Replacement
-  deriving (Eq, Read, Show, Ord, Data, Generic, Typeable)
+  deriving (Eq, Read, Show, Ord, Generic)
 
-instance NFData AccountAlias
+data Side = L | R deriving (Eq,Show,Read,Ord,Generic)
 
-data Side = L | R deriving (Eq,Show,Read,Ord,Typeable,Data,Generic)
+-- | One of the decimal marks we support: either period or comma.
+type DecimalMark = Char
 
-instance NFData Side
+isDecimalMark :: Char -> Bool
+isDecimalMark c = c == '.' || c == ','
 
 -- | The basic numeric type used in amounts.
 type Quantity = Decimal
-deriving instance Data Quantity
 -- The following is for hledger-web, and requires blaze-markup.
 -- Doing it here avoids needing a matching flag on the hledger-web package.
 instance ToMarkup Quantity
  where
    toMarkup = toMarkup . show
 
--- | An amount's price (none, per unit, or total) in another commodity.
--- The price amount should always be positive.
-data Price = NoPrice | UnitPrice Amount | TotalPrice Amount 
-  deriving (Eq,Ord,Typeable,Data,Generic,Show)
-
-instance NFData Price
+-- | An amount's per-unit or total cost/selling price in another
+-- commodity, as recorded in the journal entry eg with @ or @@.
+-- Docs call this "transaction price". The amount is always positive.
+data AmountPrice = UnitPrice !Amount | TotalPrice !Amount
+  deriving (Eq,Ord,Generic,Show)
 
 -- | Display style for an amount.
 data AmountStyle = AmountStyle {
-      ascommodityside   :: Side,                 -- ^ does the symbol appear on the left or the right ?
-      ascommodityspaced :: Bool,                 -- ^ space between symbol and quantity ?
-      asprecision       :: !Int,                 -- ^ number of digits displayed after the decimal point
-      asdecimalpoint    :: Maybe Char,           -- ^ character used as decimal point: period or comma. Nothing means "unspecified, use default"
-      asdigitgroups     :: Maybe DigitGroupStyle -- ^ style for displaying digit groups, if any
-} deriving (Eq,Ord,Read,Typeable,Data,Generic)
-
-instance NFData AmountStyle
+      ascommodityside   :: !Side,                   -- ^ does the symbol appear on the left or the right ?
+      ascommodityspaced :: !Bool,                   -- ^ space between symbol and quantity ?
+      asprecision       :: !AmountPrecision,        -- ^ number of digits displayed after the decimal point
+      asdecimalpoint    :: !(Maybe Char),           -- ^ character used as decimal point: period or comma. Nothing means "unspecified, use default"
+      asdigitgroups     :: !(Maybe DigitGroupStyle) -- ^ style for displaying digit groups, if any
+} deriving (Eq,Ord,Read,Generic)
 
 instance Show AmountStyle where
-  show AmountStyle{..} =
-    printf "AmountStylePP \"%s %s %s %s %s..\""
-    (show ascommodityside)
-    (show ascommodityspaced)
-    (show asprecision)
-    (show asdecimalpoint)
-    (show asdigitgroups)
+  show AmountStyle{..} = concat
+    [ "AmountStylePP \""
+    , show ascommodityside
+    , show ascommodityspaced
+    , show asprecision
+    , show asdecimalpoint
+    , show asdigitgroups
+    , "..\""
+    ]
+
+-- | The "display precision" for a hledger amount, by which we mean
+-- the number of decimal digits to display to the right of the decimal mark.
+-- This can be from 0 to 255 digits (the maximum supported by the Decimal library),
+-- or NaturalPrecision meaning "show all significant decimal digits".
+data AmountPrecision = Precision !Word8 | NaturalPrecision deriving (Eq,Ord,Read,Show,Generic)
 
 -- | A style for displaying digit groups in the integer part of a
 -- floating point number. It consists of the character used to
@@ -187,39 +211,60 @@ instance Show AmountStyle where
 -- point), and the size of each group, starting with the one nearest
 -- the decimal point. The last group size is assumed to repeat. Eg,
 -- comma between thousands is DigitGroups ',' [3].
-data DigitGroupStyle = DigitGroups Char [Int]
-  deriving (Eq,Ord,Read,Show,Typeable,Data,Generic)
-
-instance NFData DigitGroupStyle
+data DigitGroupStyle = DigitGroups !Char ![Word8]
+  deriving (Eq,Ord,Read,Show,Generic)
 
 type CommoditySymbol = Text
 
 data Commodity = Commodity {
   csymbol :: CommoditySymbol,
   cformat :: Maybe AmountStyle
-  } deriving (Show,Eq,Data,Generic) --,Ord,Typeable,Data,Generic)
-
-instance NFData Commodity
+  } deriving (Show,Eq,Generic) --,Ord)
 
 data Amount = Amount {
-      acommodity  :: CommoditySymbol,   -- commodity symbol, or special value "AUTO"
-      aquantity   :: Quantity,          -- numeric quantity, or zero in case of "AUTO"
-      aismultiplier :: Bool,            -- ^ kludge: a flag marking this amount and posting as a multiplier
-                                        --   in a TMPostingRule. In a regular Posting, should always be false.
-      astyle      :: AmountStyle,
-      aprice      :: Price            -- ^ the (fixed, transaction-specific) price for this amount, if any
-    } deriving (Eq,Ord,Typeable,Data,Generic,Show)
+      acommodity  :: !CommoditySymbol,     -- commodity symbol, or special value "AUTO"
+      aquantity   :: !Quantity,            -- numeric quantity, or zero in case of "AUTO"
+      aismultiplier :: !Bool,              -- ^ kludge: a flag marking this amount and posting as a multiplier
+                                           --   in a TMPostingRule. In a regular Posting, should always be false.
+      astyle      :: !AmountStyle,
+      aprice      :: !(Maybe AmountPrice)  -- ^ the (fixed, transaction-specific) price for this amount, if any
+    } deriving (Eq,Ord,Generic,Show)
 
-instance NFData Amount
+newtype MixedAmount = Mixed (M.Map MixedAmountKey Amount) deriving (Eq,Ord,Generic,Show)
 
-newtype MixedAmount = Mixed [Amount] deriving (Eq,Ord,Typeable,Data,Generic,Show)
+-- | Stores the CommoditySymbol of the Amount, along with the CommoditySymbol of
+-- the price, and its unit price if being used.
+data MixedAmountKey
+  = MixedAmountKeyNoPrice    !CommoditySymbol
+  | MixedAmountKeyTotalPrice !CommoditySymbol !CommoditySymbol
+  | MixedAmountKeyUnitPrice  !CommoditySymbol !CommoditySymbol !Quantity
+  deriving (Eq,Generic,Show)
 
-instance NFData MixedAmount
+-- | We don't auto-derive the Ord instance because it would give an undesired ordering.
+-- We want the keys to be sorted lexicographically:
+-- (1) By the primary commodity of the amount.
+-- (2) By the commodity of the price, with no price being first.
+-- (3) By the unit price, from most negative to most positive, with total prices
+-- before unit prices.
+-- For example, we would like the ordering to give
+-- MixedAmountKeyNoPrice "X" < MixedAmountKeyTotalPrice "X" "Z" < MixedAmountKeyNoPrice "Y"
+instance Ord MixedAmountKey where
+  compare = comparing commodity <> comparing pCommodity <> comparing pPrice
+    where
+      commodity (MixedAmountKeyNoPrice    c)     = c
+      commodity (MixedAmountKeyTotalPrice c _)   = c
+      commodity (MixedAmountKeyUnitPrice  c _ _) = c
+
+      pCommodity (MixedAmountKeyNoPrice    _)      = Nothing
+      pCommodity (MixedAmountKeyTotalPrice _ pc)   = Just pc
+      pCommodity (MixedAmountKeyUnitPrice  _ pc _) = Just pc
+
+      pPrice (MixedAmountKeyNoPrice    _)     = Nothing
+      pPrice (MixedAmountKeyTotalPrice _ _)   = Nothing
+      pPrice (MixedAmountKeyUnitPrice  _ _ q) = Just q
 
 data PostingType = RegularPosting | VirtualPosting | BalancedVirtualPosting
-                   deriving (Eq,Show,Typeable,Data,Generic)
-
-instance NFData PostingType
+                   deriving (Eq,Show,Generic)
 
 type TagName = Text
 type TagValue = Text
@@ -229,9 +274,7 @@ type DateTag = (TagName, Day)
 -- | The status of a transaction or posting, recorded with a status mark
 -- (nothing, !, or *). What these mean is ultimately user defined.
 data Status = Unmarked | Pending | Cleared
-  deriving (Eq,Ord,Bounded,Enum,Typeable,Data,Generic)
-
-instance NFData Status
+  deriving (Eq,Ord,Bounded,Enum,Generic)
 
 instance Show Status where -- custom show.. bad idea.. don't do it..
   show Unmarked = ""
@@ -280,9 +323,7 @@ data BalanceAssertion = BalanceAssertion {
       batotal     :: Bool,               -- ^ disallow additional non-asserted commodities ?
       bainclusive :: Bool,               -- ^ include subaccounts when calculating the actual balance ?
       baposition  :: GenericSourcePos    -- ^ the assertion's file position, for error reporting
-    } deriving (Eq,Typeable,Data,Generic,Show)
-
-instance NFData BalanceAssertion
+    } deriving (Eq,Generic,Show)
 
 data Posting = Posting {
       pdate             :: Maybe Day,         -- ^ this posting's date, if different from the transaction's
@@ -299,11 +340,9 @@ data Posting = Posting {
                                                     --   Tying this knot gets tedious, Maybe makes it easier/optional.
       poriginal         :: Maybe Posting            -- ^ When this posting has been transformed in some way
                                                     --   (eg its amount or price was inferred, or the account name was
-                                                    --   changed by a pivot or budget report), this references the original 
+                                                    --   changed by a pivot or budget report), this references the original
                                                     --   untransformed posting (which will have Nothing in this field).
-    } deriving (Typeable,Data,Generic)
-
-instance NFData Posting
+    } deriving (Generic)
 
 -- The equality test for postings ignores the parent transaction's
 -- identity, to avoid recurring ad infinitum.
@@ -331,9 +370,7 @@ instance Show Posting where
 -- | The position of parse errors (eg), like parsec's SourcePos but generic.
 data GenericSourcePos = GenericSourcePos FilePath Int Int    -- ^ file path, 1-based line number and 1-based column number.
                       | JournalSourcePos FilePath (Int, Int) -- ^ file path, inclusive range of 1-based line numbers (first, last).
-  deriving (Eq, Read, Show, Ord, Data, Generic, Typeable)
-
-instance NFData GenericSourcePos
+  deriving (Eq, Read, Show, Ord, Generic)
 
 --{-# ANN Transaction "HLint: ignore" #-}
 --    Ambiguous type variable ‘p0’ arising from an annotation
@@ -351,21 +388,17 @@ data Transaction = Transaction {
       tcomment                 :: Text,      -- ^ this transaction's comment lines, as a single non-indented multi-line string
       ttags                    :: [Tag],     -- ^ tag names and values, extracted from the comment
       tpostings                :: [Posting]  -- ^ this transaction's postings
-    } deriving (Eq,Typeable,Data,Generic,Show)
-
-instance NFData Transaction
+    } deriving (Eq,Generic,Show)
 
 -- | A transaction modifier rule. This has a query which matches postings
--- in the journal, and a list of transformations to apply to those 
+-- in the journal, and a list of transformations to apply to those
 -- postings or their transactions. Currently there is one kind of transformation:
--- the TMPostingRule, which adds a posting ("auto posting") to the transaction, 
--- optionally setting its amount to the matched posting's amount multiplied by a constant. 
+-- the TMPostingRule, which adds a posting ("auto posting") to the transaction,
+-- optionally setting its amount to the matched posting's amount multiplied by a constant.
 data TransactionModifier = TransactionModifier {
       tmquerytxt :: Text,
       tmpostingrules :: [TMPostingRule]
-    } deriving (Eq,Typeable,Data,Generic,Show)
-
-instance NFData TransactionModifier
+    } deriving (Eq,Generic,Show)
 
 nulltransactionmodifier = TransactionModifier{
   tmquerytxt = ""
@@ -381,8 +414,8 @@ type TMPostingRule = Posting
 -- | A periodic transaction rule, describing a transaction that recurs.
 data PeriodicTransaction = PeriodicTransaction {
       ptperiodexpr   :: Text,     -- ^ the period expression as written
-      ptinterval     :: Interval, -- ^ the interval at which this transaction recurs 
-      ptspan         :: DateSpan, -- ^ the (possibly unbounded) period during which this transaction recurs. Contains a whole number of intervals. 
+      ptinterval     :: Interval, -- ^ the interval at which this transaction recurs
+      ptspan         :: DateSpan, -- ^ the (possibly unbounded) period during which this transaction recurs. Contains a whole number of intervals.
       --
       ptstatus       :: Status,   -- ^ some of Transaction's fields
       ptcode         :: Text,
@@ -390,7 +423,7 @@ data PeriodicTransaction = PeriodicTransaction {
       ptcomment      :: Text,
       pttags         :: [Tag],
       ptpostings     :: [Posting]
-    } deriving (Eq,Typeable,Data,Generic) -- , Show in PeriodicTransaction.hs
+    } deriving (Eq,Generic) -- , Show in PeriodicTransaction.hs
 
 nullperiodictransaction = PeriodicTransaction{
       ptperiodexpr   = ""
@@ -404,11 +437,7 @@ nullperiodictransaction = PeriodicTransaction{
      ,ptpostings     = []
 }
 
-instance NFData PeriodicTransaction
-
-data TimeclockCode = SetBalance | SetRequiredHours | In | Out | FinalOut deriving (Eq,Ord,Typeable,Data,Generic)
-
-instance NFData TimeclockCode
+data TimeclockCode = SetBalance | SetRequiredHours | In | Out | FinalOut deriving (Eq,Ord,Generic)
 
 data TimeclockEntry = TimeclockEntry {
       tlsourcepos   :: GenericSourcePos,
@@ -416,20 +445,29 @@ data TimeclockEntry = TimeclockEntry {
       tldatetime    :: LocalTime,
       tlaccount     :: AccountName,
       tldescription :: Text
-    } deriving (Eq,Ord,Typeable,Data,Generic)
+    } deriving (Eq,Ord,Generic)
 
-instance NFData TimeclockEntry
+-- | A market price declaration made by the journal format's P directive.
+-- It declares two things: a historical exchange rate between two commodities,
+-- and an amount display style for the second commodity.
+data PriceDirective = PriceDirective {
+   pddate      :: Day
+  ,pdcommodity :: CommoditySymbol
+  ,pdamount    :: Amount
+  } deriving (Eq,Ord,Generic,Show)
+        -- Show instance derived in Amount.hs (XXX why ?)
 
--- | A historical exchange rate between two commodities, eg published
--- by a stock exchange or the foreign exchange market.
+-- | A historical market price (exchange rate) from one commodity to another.
+-- A more concise form of a PriceDirective, without the amount display info.
 data MarketPrice = MarketPrice {
-      mpdate      :: Day,
-      mpcommodity :: CommoditySymbol,
-      mpamount    :: Amount
-    } deriving (Eq,Ord,Typeable,Data,Generic)
-        -- Show instance derived in Amount.hs
+   mpdate :: Day                -- ^ Date on which this price becomes effective.
+  ,mpfrom :: CommoditySymbol    -- ^ The commodity being converted from.
+  ,mpto   :: CommoditySymbol    -- ^ The commodity being converted to.
+  ,mprate :: Quantity           -- ^ One unit of the "from" commodity is worth this quantity of the "to" commodity.
+  } deriving (Eq,Ord,Generic)
+        -- Show instance derived in Amount.hs (XXX why ?)
 
-instance NFData MarketPrice
+-- additional valuation-related types in Valuation.hs
 
 -- | A Journal, containing transactions and various other things.
 -- The basic data model for hledger.
@@ -445,19 +483,21 @@ data Journal = Journal {
   -- parsing-related data
    jparsedefaultyear      :: Maybe Year                            -- ^ the current default year, specified by the most recent Y directive (or current date)
   ,jparsedefaultcommodity :: Maybe (CommoditySymbol,AmountStyle)   -- ^ the current default commodity and its format, specified by the most recent D directive
+  ,jparsedecimalmark      :: Maybe DecimalMark                     -- ^ the character to always parse as decimal point, if set by CsvReader's decimal-mark (or a future journal directive)
   ,jparseparentaccounts   :: [AccountName]                         -- ^ the current stack of parent account names, specified by apply account directives
   ,jparsealiases          :: [AccountAlias]                        -- ^ the current account name aliases in effect, specified by alias directives (& options ?)
   -- ,jparsetransactioncount :: Integer                               -- ^ the current count of transactions parsed so far (only journal format txns, currently)
   ,jparsetimeclockentries :: [TimeclockEntry]                       -- ^ timeclock sessions which have not been clocked out
   ,jincludefilestack      :: [FilePath]
   -- principal data
-  ,jdeclaredaccounts      :: [(AccountName,AccountDeclarationInfo)] -- ^ Accounts declared by account directives, in parse order (after journal finalisation) 
-  ,jdeclaredaccounttypes  :: M.Map AccountType [AccountName]        -- ^ Accounts whose type has been declared in account directives (usually 5 top-level accounts) 
+  ,jdeclaredpayees        :: [(Payee,PayeeDeclarationInfo)]         -- ^ Payees declared by payee directives, in parse order (after journal finalisation)
+  ,jdeclaredaccounts      :: [(AccountName,AccountDeclarationInfo)] -- ^ Accounts declared by account directives, in parse order (after journal finalisation)
+  ,jdeclaredaccounttypes  :: M.Map AccountType [AccountName]        -- ^ Accounts whose type has been declared in account directives (usually 5 top-level accounts)
+  ,jglobalcommoditystyles :: M.Map CommoditySymbol AmountStyle      -- ^ per-commodity display styles declared globally, eg by command line option or import command
   ,jcommodities           :: M.Map CommoditySymbol Commodity        -- ^ commodities and formats declared by commodity directives
-  ,jinferredcommodities   :: M.Map CommoditySymbol AmountStyle      -- ^ commodities and formats inferred from journal amounts  TODO misnamed - jusedstyles
-  ,jmarketprices          :: [MarketPrice]                          -- ^ All market price declarations (P directives), in parse order (after journal finalisation).
-                                                                    --   These will be converted to a Prices db for looking up prices by date.
-                                                                    --   (This field is not date-sorted, to allow monoidally combining finalised journals.)
+  ,jinferredcommodities   :: M.Map CommoditySymbol AmountStyle      -- ^ commodities and formats inferred from journal amounts
+  ,jpricedirectives       :: [PriceDirective]                       -- ^ Declarations of market prices by P directives, in parse order (after journal finalisation)
+  ,jinferredmarketprices  :: [MarketPrice]                          -- ^ Market prices implied by transactions, in parse order (after journal finalisation)
   ,jtxnmodifiers          :: [TransactionModifier]
   ,jperiodictxns          :: [PeriodicTransaction]
   ,jtxns                  :: [Transaction]
@@ -465,14 +505,12 @@ data Journal = Journal {
   ,jfiles                 :: [(FilePath, Text)]                     -- ^ the file path and raw text of the main and
                                                                     --   any included journal files. The main file is first,
                                                                     --   followed by any included files in the order encountered.
+                                                                    --   TODO: FilePath is a sloppy type here, don't assume it's a
+                                                                    --   real file; values like "", "-", "(string)" can be seen
   ,jlastreadtime          :: ClockTime                              -- ^ when this journal was last read from its file(s)
-  } deriving (Eq, Typeable, Data, Generic)
+  } deriving (Eq, Generic)
 
-deriving instance Data ClockTime
-deriving instance Typeable ClockTime
 deriving instance Generic ClockTime
-instance NFData ClockTime
-instance NFData Journal
 
 -- | A journal in the process of being parsed, not yet finalised.
 -- The data is partial, and list fields are in reverse order.
@@ -482,6 +520,17 @@ type ParsedJournal = Journal
 -- The --output-format option selects one of these for output.
 type StorageFormat = String
 
+-- | Extra information found in a payee directive.
+data PayeeDeclarationInfo = PayeeDeclarationInfo {
+   pdicomment :: Text   -- ^ any comment lines following the payee directive
+  ,pditags    :: [Tag]  -- ^ tags extracted from the comment, if any
+} deriving (Eq,Show,Generic)
+
+nullpayeedeclarationinfo = PayeeDeclarationInfo {
+   pdicomment          = ""
+  ,pditags             = []
+}
+
 -- | Extra information about an account that can be derived from
 -- its account directive (and the other account directives).
 data AccountDeclarationInfo = AccountDeclarationInfo {
@@ -489,9 +538,7 @@ data AccountDeclarationInfo = AccountDeclarationInfo {
   ,aditags             :: [Tag]  -- ^ tags extracted from the account comment, if any
   ,adideclarationorder :: Int    -- ^ the order in which this account was declared,
                                  --   relative to other account declarations, during parsing (1..)
-} deriving (Eq,Show,Data,Generic)
-
-instance NFData AccountDeclarationInfo
+} deriving (Eq,Show,Generic)
 
 nullaccountdeclarationinfo = AccountDeclarationInfo {
    adicomment          = ""
@@ -512,14 +559,14 @@ data Account = Account {
   ,anumpostings              :: Int            -- ^ the number of postings to this account
   ,aebalance                 :: MixedAmount    -- ^ this account's balance, excluding subaccounts
   ,aibalance                 :: MixedAmount    -- ^ this account's balance, including subaccounts
-  } deriving (Typeable, Data, Generic)
+  } deriving (Generic)
 
--- | Whether an account's balance is normally a positive number (in 
--- accounting terms, a debit balance) or a negative number (credit balance). 
+-- | Whether an account's balance is normally a positive number (in
+-- accounting terms, a debit balance) or a negative number (credit balance).
 -- Assets and expenses are normally positive (debit), while liabilities, equity
 -- and income are normally negative (credit).
 -- https://en.wikipedia.org/wiki/Normal_balance
-data NormalSign = NormallyPositive | NormallyNegative deriving (Show, Data, Eq) 
+data NormalSign = NormallyPositive | NormallyNegative deriving (Show, Eq)
 
 -- | A Ledger has the journal it derives from, and the accounts
 -- derived from that. Accounts are accessible both list-wise and

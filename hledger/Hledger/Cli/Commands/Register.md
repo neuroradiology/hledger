@@ -1,12 +1,19 @@
-register, reg, r\
+register, reg\
 Show postings and their running total.
 
-_FLAGS_
+_FLAGS
 
-The register command displays postings in date order, one per line,
-and their running total.  This is typically used with a
-[query](#queries) selecting a particular account, to see that
-account's activity:
+The register command displays matched postings, across all accounts,
+in date order, with their running total or running historical balance.
+(See also the [`aregister`](#aregister) command, which shows matched
+transactions in a specific account.)
+
+register normally shows line per posting, but note that
+multi-commodity amounts will occupy multiple lines (one line per
+commodity).
+
+It is typically used with a [query](#queries) selecting a
+particular account, to see that account's activity:
 
 ```shell
 $ hledger register checking
@@ -117,7 +124,9 @@ $ hledger reg -w 100,40           # set overall width 100, description width 40
 $ hledger reg -w $COLUMNS,40      # use terminal width, & description width 40
 ```
 
-This command also supports
-[output destination](/manual.html#output-destination) and
-[output format](/manual.html#output-format) selection.
+This command also supports the
+[output destination](hledger.html#output-destination) and
+[output format](hledger.html#output-format) options
+The output formats supported are
+`txt`, `csv`, and (experimental) `json`.
 

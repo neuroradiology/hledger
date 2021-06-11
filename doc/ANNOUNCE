@@ -1,33 +1,44 @@
-I'm pleased to announce the release of hledger 1.14!
-Thank you release contributors Jakob Schöttl and Jakub Zárybnický.
+I'm very pleased to announce hledger 1.21 !
+http://hledger.org/release-notes.html#hledger-1-21 
+describes the user-visible changes. Highlights include:
 
-hledger is a robust, cross-platform plain text accounting tool, for
-tracking money, time, stocks, cryptocurrencies or any other commodity,
-using double-entry accounting, private or shared plain text files,
-revision control, and command-line, curses or web UIs.
-Find out more at http://hledger.org and http://plaintextaccounting.org.
+- About 10% faster/more space-efficient, and much more in some cases
+- Jump to any topic in the manuals from the command line
+- More polish for valuation and balance reports, and a new value change report
+- Improvements to check, print and other commands.
 
-Release notes summary:
-----------------------
-Inclusive balance assertions, commodities command, --invert option,
-JSON get/add support in hledger-web.
+Thank you to the following release contributors this time around:
+Dmitry Astapov, Arnout Engelen, Damien Cassou, aragaer, Doug
+Goldstein, Caleb Maclennan, Felix Van der Jeugt, heavy first time
+contributor Vladimir Zhelezov, and especially Stephen Morgan.
 
-For full details, see http://hledger.org/release-notes.
 
-Getting started:
-----------------
+hledger (http://hledger.org) is a robust, cross-platform, plain text
+accounting tool, with command-line, terminal and web UIs. It is an
+actively maintained, largely compatible reimplementation of Ledger CLI
+with many improvements. You can use it to track money, time,
+investments, cryptocurrencies, inventory and more.
+See also the Plain Text Accounting site (http://plaintextaccounting.org).
 
-All install methods are described at http://hledger.org/download .
-(system packages, windows binaries, docker, nix, cabal, stack,
-hledger-install bash script..) Some of these might take a few days to
-become up to date.
+http://hledger.org/download shows all the ways to install hledger on
+mac, windows or unix (stack, cabal, brew, nix, CI binaries, your
+package manager..). Or, run this bash script to install or upgrade to
+the latest release:
 
-Tutorials and all docs and support options are linked at http://hledger.org .
-Get help via chat in #hledger on Freenode: http://irc.hledger.org
-Or connect via Matrix: http://riot.hledger.org
+$ curl -sO https://raw.githubusercontent.com/simonmichael/hledger/master/hledger-install/hledger-install.sh
+$ less hledger-install.sh   # security review
+$ bash hledger-install.sh
 
-New and old users, contributors, sponsors, positive/negative feedback,
-always welcome!
+New users, check out https://hledger.org/quickstart
+or the tutorials (with pictures!) at hledger.org -> FIRST STEPS
+or the https://hledger.org/videos.html.
 
-Best,
+To get help, see http://hledger.org#help-feedback,
+and join our chat channel via Freenode (#hledger, http://irc.hledger.org)
+or Matrix (#freenode_#hledger:matrix.org, http://matrix.hledger.org).
+Beginners and experts, contributors, sponsors, and all feedback are most welcome!
+
+
+Wishing you health and prosperity,
+
 -Simon

@@ -4,7 +4,9 @@ Standard imports and utilities which are useful everywhere, or needed low
 in the module hierarchy. This is the bottom of hledger's module graph.
 
 -}
-{-# LANGUAGE OverloadedStrings, LambdaCase #-}
+{-# LANGUAGE CPP               #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Hledger.Utils (---- provide these frequently used modules - or not, for clearer api:
                           -- module Control.Monad,
@@ -29,32 +31,27 @@ module Hledger.Utils (---- provide these frequently used modules - or not, for c
                           -- Debug.Trace.trace,
                           -- module Data.PPrint,
                           -- module Hledger.Utils.UTF8IOCompat
-                          SystemString,fromSystemString,toSystemString,error',userError',usageError,
+                          error',userError',usageError,
                           -- the rest need to be done in each module I think
                           )
 where
 
 import Control.Monad (liftM, when)
--- import Data.Char
-import Data.Default
 import Data.FileEmbed (makeRelativeToProject, embedStringFile)
-import Data.List
--- import Data.Maybe
--- import Data.PPrint
+import Data.List (foldl', foldl1')
 -- import Data.String.Here (hereFile)
 import Data.Text (Text)
 import qualified Data.Text.IO as T
-import Data.Time.Clock
-import Data.Time.LocalTime
--- import Data.Text (Text)
--- import qualified Data.Text as T
+import Data.Time.Clock (getCurrentTime)
+import Data.Time.LocalTime (LocalTime, ZonedTime, getCurrentTimeZone,
+                            utcToLocalTime, utcToZonedTime)
 -- import Language.Haskell.TH.Quote (QuasiQuoter(..))
 import Language.Haskell.TH.Syntax (Q, Exp)
 import System.Directory (getHomeDirectory)
-import System.FilePath((</>), isRelative)
+import System.FilePath (isRelative, (</>))
 import System.IO
--- import Text.Printf
--- import qualified Data.Map as Map
+  (Handle, IOMode (..), hGetEncoding, hSetEncoding, hSetNewlineMode,
+   openFile, stdin, universalNewlineMode, utf8_bom)
 
 import Hledger.Utils.Debug
 import Hledger.Utils.Parse
@@ -66,7 +63,7 @@ import Hledger.Utils.Color
 import Hledger.Utils.Tree
 -- import Prelude hiding (readFile,writeFile,appendFile,getContents,putStr,putStrLn)
 -- import Hledger.Utils.UTF8IOCompat   (readFile,writeFile,appendFile,getContents,putStr,putStrLn)
-import Hledger.Utils.UTF8IOCompat (SystemString,fromSystemString,toSystemString,error',userError',usageError)
+import Hledger.Utils.UTF8IOCompat (error',userError',usageError)
 
 
 -- tuples
@@ -92,6 +89,27 @@ third6  (_,_,x,_,_,_) = x
 fourth6 (_,_,_,x,_,_) = x
 fifth6  (_,_,_,_,x,_) = x
 sixth6  (_,_,_,_,_,x) = x
+
+-- currying
+
+
+curry2 :: ((a, b) -> c) -> a -> b -> c
+curry2 f x y = f (x, y)
+
+uncurry2 :: (a -> b -> c) -> (a, b) -> c
+uncurry2 f (x, y) = f x y
+
+curry3 :: ((a, b, c) -> d) -> a -> b -> c -> d
+curry3 f x y z = f (x, y, z)
+
+uncurry3 :: (a -> b -> c -> d) -> (a, b, c) -> d
+uncurry3 f (x, y, z) = f x y z
+
+curry4 :: ((a, b, c, d) -> e) -> a -> b -> c -> d -> e
+curry4 f w x y z = f (w, x, y, z)
+
+uncurry4 :: (a -> b -> c -> d -> e) -> (a, b, c, d) -> e
+uncurry4 f (w, x, y, z) = f w x y z
 
 -- lists
 
@@ -123,15 +141,6 @@ getCurrentZonedTime = do
 
 -- misc
 
-instance Default Bool where def = False
-
-isLeft :: Either a b -> Bool
-isLeft (Left _) = True
-isLeft _        = False
-
-isRight :: Either a b -> Bool
-isRight = not . isLeft
-
 -- | Apply a function the specified number of times,
 -- which should be > 0 (otherwise does nothing).
 -- Possibly uses O(n) stack ?
@@ -148,6 +157,7 @@ applyN n f | n < 1     = id
 expandPath :: FilePath -> FilePath -> IO FilePath -- general type sig for use in reader parsers
 expandPath _ "-" = return "-"
 expandPath curdir p = (if isRelative p then (curdir </>) else id) `liftM` expandHomePath p
+-- PARTIAL:
 
 -- | Expand user home path indicated by tilde prefix
 expandHomePath :: FilePath -> IO FilePath
@@ -157,18 +167,14 @@ expandHomePath = \case
     ('~':_)      -> ioError $ userError "~USERNAME in paths is not supported"
     p            -> return p
 
-firstJust ms = case dropWhile (==Nothing) ms of
-    [] -> Nothing
-    (md:_) -> md
-
--- | Read text from a file, 
--- handling any of the usual line ending conventions,
+-- | Read text from a file,
+-- converting any \r\n line endings to \n,,
 -- using the system locale's text encoding,
--- ignoring any utf8 BOM prefix (as seen in paypal's 2018 CSV, eg) if that encoding is utf8. 
+-- ignoring any utf8 BOM prefix (as seen in paypal's 2018 CSV, eg) if that encoding is utf8.
 readFilePortably :: FilePath -> IO Text
 readFilePortably f =  openFile f ReadMode >>= readHandlePortably
 
--- | Like readFilePortably, but read from standard input if the path is "-". 
+-- | Like readFilePortably, but read from standard input if the path is "-".
 readFileOrStdinPortably :: String -> IO Text
 readFileOrStdinPortably f = openFileOrStdin f ReadMode >>= readHandlePortably
   where
@@ -236,7 +242,7 @@ embedFileRelative f = makeRelativeToProject f >>= embedStringFile
 -- hereFileRelative f = makeRelativeToProject f >>= hereFileExp
 --   where
 --     QuasiQuoter{quoteExp=hereFileExp} = hereFile
-    
+
 tests_Utils = tests "Utils" [
   tests_Text
   ]

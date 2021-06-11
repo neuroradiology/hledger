@@ -38,6 +38,7 @@ Brick.defaultMain brickapp st
 
 module Hledger.UI.UITypes where
 
+import Data.Text (Text)
 import Data.Time.Calendar (Day)
 import Brick
 import Brick.Widgets.List (List)
@@ -54,7 +55,8 @@ import Hledger.UI.UIOptions
 -- The app can be in one of several modes: normal screen operation,
 -- showing a help dialog, entering data in the minibuffer etc.
 data UIState = UIState {
-   aopts        :: UIOpts    -- ^ the command-line options and query arguments currently in effect
+   astartupopts :: UIOpts    -- ^ the command-line options and query arguments specified at startup
+  ,aopts        :: UIOpts    -- ^ the command-line options and query arguments currently in effect
   ,ajournal     :: Journal   -- ^ the journal being viewed
   ,aPrevScreens :: [Screen]  -- ^ previously visited screens, most recent first
   ,aScreen      :: Screen    -- ^ the currently active screen
@@ -132,22 +134,21 @@ data Screen =
 
 -- | An item in the accounts screen's list of accounts and balances.
 data AccountsScreenItem = AccountsScreenItem {
-   asItemIndentLevel        :: Int          -- ^ indent level
-  ,asItemAccountName        :: AccountName  -- ^ full account name
-  ,asItemDisplayAccountName :: AccountName  -- ^ full or short account name to display
-  ,asItemRenderedAmounts    :: [String]     -- ^ rendered amounts
-  }
-  deriving (Show)
+   asItemIndentLevel        :: Int                -- ^ indent level
+  ,asItemAccountName        :: AccountName        -- ^ full account name
+  ,asItemDisplayAccountName :: AccountName        -- ^ full or short account name to display
+  ,asItemMixedAmount        :: Maybe MixedAmount  -- ^ mixed amount to display
+  } deriving (Show)
 
 -- | An item in the register screen's list of transactions in the current account.
 data RegisterScreenItem = RegisterScreenItem {
-   rsItemDate           :: String           -- ^ date
-  ,rsItemStatus         :: Status           -- ^ transaction status
-  ,rsItemDescription    :: String           -- ^ description
-  ,rsItemOtherAccounts  :: String           -- ^ other accounts
-  ,rsItemChangeAmount   :: String           -- ^ the change to the current account from this transaction
-  ,rsItemBalanceAmount  :: String           -- ^ the balance or running total after this transaction
-  ,rsItemTransaction    :: Transaction      -- ^ the full transaction
+   rsItemDate           :: Text         -- ^ date
+  ,rsItemStatus         :: Status       -- ^ transaction status
+  ,rsItemDescription    :: Text         -- ^ description
+  ,rsItemOtherAccounts  :: Text         -- ^ other accounts
+  ,rsItemChangeAmount   :: WideBuilder  -- ^ the change to the current account from this transaction
+  ,rsItemBalanceAmount  :: WideBuilder  -- ^ the balance or running total after this transaction
+  ,rsItemTransaction    :: Transaction  -- ^ the full transaction
   }
   deriving (Show)
 

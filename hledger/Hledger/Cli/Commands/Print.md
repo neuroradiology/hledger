@@ -1,15 +1,26 @@
-print, txns, p\
+print\
 Show transaction journal entries, sorted by date. 
 
-_FLAGS_
+_FLAGS
 
 The print command displays full journal entries (transactions) from
-the journal file in date order, tidily formatted.
-With --date2, transactions are sorted by secondary date instead.
+the journal file, sorted by date
+(or with `--date2`, by [secondary date](#secondary-dates)).
 
-print's output is always a valid [hledger journal](/journal.html).  
-It preserves all transaction information, but it does not preserve
-directives or inter-transaction comments
+Amounts are shown mostly normalised to 
+[commodity display style](#commodity-display-styles), 
+eg the placement of commodity symbols will be consistent.
+All of their decimal places are shown, as in the original journal entry
+(with one alteration: in some cases trailing zeroes are added.)
+
+Amounts are shown right-aligned within each transaction (but not across all transactions). 
+
+Directives and inter-transaction comments are not shown, currently.
+This means the print command is somewhat lossy, and if you are using it to
+reformat your journal you should take care to also copy over the directives
+and file-level comments.
+
+Eg:
 
 ```shell
 $ hledger print
@@ -35,39 +46,49 @@ $ hledger print
     assets:bank:checking           $-1
 ```
 
-Normally, the journal entry's explicit or implicit amount style is preserved.
-Ie when an amount is omitted in the journal, it will be omitted in the output.
-You can use the `-x`/`--explicit` flag to make all amounts explicit, which can be
-useful for troubleshooting or for making your journal more readable and
-robust against data entry errors.
-Note, `-x` will cause postings with a multi-commodity amount
-(these can arise when a multi-commodity transaction has an implicit amount)
-will be split into multiple single-commodity postings, for valid journal output.
+print's output is usually a valid [hledger journal](https://hledger.org/hledger.html), and you can process it again with a second hledger command. This can be useful for certain kinds of search, eg:
 
-With `-B`/`--cost`, amounts with [transaction prices](/journal.html#transaction-prices)
+```shell
+# Show running total of food expenses paid from cash.
+# -f- reads from stdin. -I/--ignore-assertions is sometimes needed.
+$ hledger print assets:cash | hledger -f- -I reg expenses:food
+```
+
+There are some situations where print's output can become unparseable:
+
+- [Valuation](#valuation) affects posting amounts but not [balance assertion](#balance-assertions) or [balance assignment](#balance-assignments) amounts, potentially causing those to [fail](https://github.com/simonmichael/hledger/issues/1429).
+- [Auto postings](#auto-postings) can generate postings with [too many missing amounts](https://github.com/simonmichael/hledger/issues/1276).
+
+Normally, the journal entry's explicit or implicit amount style is preserved.
+For example, when an amount is omitted in the journal, it will not appear in the output.
+Similarly, when a transaction price is implied but not written, it will not appear in the output.
+You can use the `-x`/`--explicit` flag to make all amounts and transaction prices explicit, 
+which can be useful for troubleshooting or for making your journal more readable and
+robust against data entry errors.
+`-x` is also implied by using any of `-B`,`-V`,`-X`,`--value`.
+
+Note, `-x`/`--explicit` will cause postings with a multi-commodity amount
+(these can arise when a multi-commodity transaction has an implicit amount)
+to be split into multiple single-commodity postings, 
+keeping the output parseable.
+
+With `-B`/`--cost`, amounts with [transaction prices](https://hledger.org/hledger.html#transaction-prices)
 are converted to cost using that price. This can be used for troubleshooting.
 
 With `-m`/`--match` and a STR argument, print will show at most one transaction: the one 
 one whose description is most similar to STR, and is most recent. STR should contain at
 least two characters. If there is no similar-enough match, no transaction will be shown.
 
-With `--new`, for each FILE being read, hledger reads (and writes) a special 
-state file (`.latest.FILE` in the same directory), containing the latest transaction date(s)
-that were seen last time FILE was read. When this file is found, only transactions 
-with newer dates (and new transactions on the latest date) are printed.
-This is useful for ignoring already-seen entries in import data, such as downloaded CSV files.
-Eg:
+With `--new`, hledger prints only transactions it has not seen on a previous run.
+This uses the same deduplication system as the [`import`](#import) command.
+(See import's docs for details.)
 
-```shell
-$ hledger -f bank1.csv print --new
-# shows transactions added since last print --new on this file
-```
+This command also supports the
+[output destination](hledger.html#output-destination) and
+[output format](hledger.html#output-format) options
+The output formats supported are
+`txt`, `csv`, and (experimental) `json` and `sql`.
 
-This assumes that transactions added to FILE always have same or increasing dates, 
-and that transactions on the same day do not get reordered.
-See also the [import](#import) command.    
-
-This command also supports [output destination](/manual.html#output-destination) and [output format](/manual.html#output-format) selection.
 Here's an example of print's CSV output:
 
 ```shell

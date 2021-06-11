@@ -1,7 +1,8 @@
 -- The account register screen, showing transactions in an account, like hledger-web's register.
 
-{-# LANGUAGE OverloadedStrings, FlexibleContexts, RecordWildCards #-}
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards   #-}
 
 module Hledger.UI.RegisterScreen
  (registerScreen
@@ -14,10 +15,6 @@ where
 import Control.Monad
 import Control.Monad.IO.Class (liftIO)
 import Data.List
-import Data.List.Split (splitOn)
-#if !(MIN_VERSION_base(4,11,0))
-import Data.Monoid ((<>))
-#endif
 import Data.Maybe
 import qualified Data.Text as T
 import Data.Time.Calendar
@@ -59,23 +56,39 @@ rsSetAccount a forceinclusive scr@RegisterScreen{} =
 rsSetAccount _ _ scr = scr
 
 rsInit :: Day -> Bool -> UIState -> UIState
-rsInit d reset ui@UIState{aopts=uopts@UIOpts{cliopts_=CliOpts{reportopts_=ropts}}, ajournal=j, aScreen=s@RegisterScreen{..}} =
+rsInit d reset ui@UIState{aopts=_uopts@UIOpts{cliopts_=CliOpts{reportspec_=rspec@ReportSpec{rsOpts=ropts}}}, ajournal=j, aScreen=s@RegisterScreen{..}} =
   ui{aScreen=s{rsList=newitems'}}
   where
     -- gather arguments and queries
     -- XXX temp
     inclusive = tree_ ropts || rsForceInclusive
     thisacctq = Acct $ (if inclusive then accountNameToAccountRegex else accountNameToAccountOnlyRegex) rsAccount
-    ropts' = ropts{
-               depth_=Nothing
-              }
-    pfq | presentorfuture_ uopts == PFFuture = Any
-        | otherwise                          = Date $ DateSpan Nothing (Just $ addDays 1 d)
-    q = And [queryFromOpts d ropts', pfq]
---    reportq = filterQuery (not . queryIsDepth) q
 
-    (_label,items) = accountTransactionsReport ropts' j q thisacctq
-    items' = (if empty_ ropts' then id else filter (not . isZeroMixedAmount . fifth6)) $  -- without --empty, exclude no-change txns
+    -- adjust the report options and regenerate the ReportSpec, carefully as usual to avoid screwups (#1523)
+    ropts' = ropts {
+        -- ignore any depth limit, as in postingsReport; allows register's total to match accounts screen
+        depth_=Nothing
+      -- XXX aregister also has this, needed ?
+        -- always show historical balance
+      -- , balancetype_= HistoricalBalance
+      }
+    rspec' = 
+      either (error "rsInit: adjusting the query for register, should not have failed") id $ -- PARTIAL:
+      updateReportSpec ropts' rspec
+
+    -- Further restrict the query based on the current period and future/forecast mode.
+    q = simplifyQuery $ And [rsQuery rspec', periodq, excludeforecastq (forecast_ ropts)]
+      where
+        periodq = Date $ periodAsDateSpan $ period_ ropts
+        -- Except in forecast mode, exclude future/forecast transactions.
+        excludeforecastq (Just _) = Any
+        excludeforecastq Nothing  =  -- not:date:tomorrow- not:tag:generated-transaction
+          And [
+             Not (Date $ DateSpan (Just $ addDays 1 d) Nothing)
+            ,Not generatedTransactionTag
+          ]
+    items = accountTransactionsReport rspec' j q thisacctq
+    items' = (if empty_ ropts then id else filter (not . mixedAmountLooksZero . fifth6)) $  -- without --empty, exclude no-change txns
              reverse  -- most recent last
              items
 
@@ -85,23 +98,23 @@ rsInit d reset ui@UIState{aopts=uopts@UIOpts{cliopts_=CliOpts{reportopts_=ropts}
         displayitem (t, _, _issplit, otheracctsstr, change, bal) =
           RegisterScreenItem{rsItemDate          = showDate $ transactionRegisterDate q thisacctq t
                             ,rsItemStatus        = tstatus t
-                            ,rsItemDescription   = T.unpack $ tdescription t
-                            ,rsItemOtherAccounts = case splitOn ", " otheracctsstr of
-                                                     [s] -> s
-                                                     ss  -> intercalate ", " ss
+                            ,rsItemDescription   = tdescription t
+                            ,rsItemOtherAccounts = otheracctsstr
                                                      -- _   -> "<split>"  -- should do this if accounts field width < 30
-                            ,rsItemChangeAmount  = showMixedAmountOneLineWithoutPrice change
-                            ,rsItemBalanceAmount = showMixedAmountOneLineWithoutPrice bal
+                            ,rsItemChangeAmount  = showamt change
+                            ,rsItemBalanceAmount = showamt bal
                             ,rsItemTransaction   = t
                             }
-    -- blank items are added to allow more control of scroll position; we won't allow movement over these
-    blankitems = replicate 100  -- 100 ought to be enough for anyone
+            where showamt = showMixedAmountB oneLine{displayMaxWidth=Just 32}
+    -- blank items are added to allow more control of scroll position; we won't allow movement over these.
+    -- XXX Ugly. Changing to 0 helps when debugging.
+    blankitems = replicate 100  -- "100 ought to be enough for anyone"
           RegisterScreenItem{rsItemDate          = ""
                             ,rsItemStatus        = Unmarked
                             ,rsItemDescription   = ""
                             ,rsItemOtherAccounts = ""
-                            ,rsItemChangeAmount  = ""
-                            ,rsItemBalanceAmount = ""
+                            ,rsItemChangeAmount  = mempty
+                            ,rsItemBalanceAmount = mempty
                             ,rsItemTransaction   = nulltransaction
                             }
     -- build the List
@@ -112,10 +125,10 @@ rsInit d reset ui@UIState{aopts=uopts@UIOpts{cliopts_=CliOpts{reportopts_=ropts}
     -- otherwise, the previously selected transaction if possible;
     -- otherwise, the transaction nearest in date to it;
     -- or if there's several with the same date, the nearest in journal order;
-    -- otherwise, the last (latest) transaction. 
+    -- otherwise, the last (latest) transaction.
     newitems' = listMoveTo newselidx newitems
       where
-        newselidx = 
+        newselidx =
           case (reset, listSelectedElement rsList) of
             (True, _)    -> endidx
             (_, Nothing) -> endidx
@@ -130,10 +143,10 @@ rsInit d reset ui@UIState{aopts=uopts@UIOpts{cliopts_=CliOpts{reportopts_=ropts}
                 ts = map rsItemTransaction displayitems
         endidx = length displayitems - 1
 
-rsInit _ _ _ = error "init function called with wrong screen type, should not happen"
+rsInit _ _ _ = error "init function called with wrong screen type, should not happen"  -- PARTIAL:
 
 rsDraw :: UIState -> [Widget Name]
-rsDraw UIState{aopts=uopts@UIOpts{cliopts_=copts@CliOpts{reportopts_=ropts}}
+rsDraw UIState{aopts=_uopts@UIOpts{cliopts_=copts@CliOpts{reportspec_=rspec}}
               ,aScreen=RegisterScreen{..}
               ,aMode=mode
               } =
@@ -159,12 +172,12 @@ rsDraw UIState{aopts=uopts@UIOpts{cliopts_=copts@CliOpts{reportopts_=ropts}}
         whitespacewidth = 10 -- inter-column whitespace, fixed width
         minnonamtcolswidth = datewidth + 1 + 2 + 2 -- date column plus at least 1 for status and 2 for desc and accts
         maxamtswidth = max 0 (totalwidth - minnonamtcolswidth - whitespacewidth)
-        maxchangewidthseen = maximum' $ map (strWidth . rsItemChangeAmount) displayitems
-        maxbalwidthseen = maximum' $ map (strWidth . rsItemBalanceAmount) displayitems
+        maxchangewidthseen = maximum' $ map (wbWidth . rsItemChangeAmount) displayitems
+        maxbalwidthseen = maximum' $ map (wbWidth . rsItemBalanceAmount) displayitems
         changewidthproportion = fromIntegral maxchangewidthseen / fromIntegral (maxchangewidthseen + maxbalwidthseen)
         maxchangewidth = round $ changewidthproportion * fromIntegral maxamtswidth
         maxbalwidth = maxamtswidth - maxchangewidth
-        changewidth = min maxchangewidth maxchangewidthseen 
+        changewidth = min maxchangewidth maxchangewidthseen
         balwidth = min maxbalwidth maxbalwidthseen
         -- assign the remaining space to the description and accounts columns
         -- maxdescacctswidth = totalwidth - (whitespacewidth - 4) - changewidth - balwidth
@@ -177,7 +190,7 @@ rsDraw UIState{aopts=uopts@UIOpts{cliopts_=copts@CliOpts{reportopts_=ropts}}
         -- descwidthproportion = (descwidth' + acctswidth') / descwidth'
         -- maxdescwidth = min (maxdescacctswidth - 7) (maxdescacctswidth / descwidthproportion)
         -- maxacctswidth = maxdescacctswidth - maxdescwidth
-        -- descwidth = min maxdescwidth descwidth' 
+        -- descwidth = min maxdescwidth descwidth'
         -- acctswidth = min maxacctswidth acctswidth'
         -- allocating equally.
         descwidth = maxdescacctswidth `div` 2
@@ -187,6 +200,7 @@ rsDraw UIState{aopts=uopts@UIOpts{cliopts_=copts@CliOpts{reportopts_=ropts}}
       render $ defaultLayout toplabel bottomlabel $ renderList (rsDrawItem colwidths) True rsList
 
       where
+        ropts = rsOpts rspec
         ishistorical = balancetype_ ropts == HistoricalBalance
         -- inclusive = tree_ ropts || rsForceInclusive
 
@@ -196,7 +210,7 @@ rsDraw UIState{aopts=uopts@UIOpts{cliopts_=copts@CliOpts{reportopts_=ropts}}
           <+> togglefilters
           <+> str " transactions"
           -- <+> str (if ishistorical then " historical total" else " period total")
-          <+> borderQueryStr (query_ ropts)
+          <+> borderQueryStr (T.unpack . T.unwords . map textQuoteIfNeeded $ querystring_ ropts)
           -- <+> str " and subs"
           <+> borderPeriodStr "in" (period_ ropts)
           <+> str " ("
@@ -204,7 +218,7 @@ rsDraw UIState{aopts=uopts@UIOpts{cliopts_=copts@CliOpts{reportopts_=ropts}}
           <+> str "/"
           <+> total
           <+> str ")"
-          <+> (if ignore_assertions_ $ inputopts_ copts then withAttr ("border" <> "query") (str " ignoring balance assertions") else str "")
+          <+> (if ignore_assertions_ . balancingopts_ $ inputopts_ copts then withAttr ("border" <> "query") (str " ignoring balance assertions") else str "")
           where
             togglefilters =
               case concat [
@@ -218,7 +232,7 @@ rsDraw UIState{aopts=uopts@UIOpts{cliopts_=copts@CliOpts{reportopts_=ropts}}
                          Nothing -> "-"
                          Just i -> show (i + 1)
             total = str $ show $ length nonblanks
-            nonblanks = V.takeWhile (not . null . rsItemDate) $ rsList^.listElementsL
+            nonblanks = V.takeWhile (not . T.null . rsItemDate) $ rsList^.listElementsL
 
             -- query = query_ $ reportopts_ $ cliopts_ opts
 
@@ -230,36 +244,43 @@ rsDraw UIState{aopts=uopts@UIOpts{cliopts_=copts@CliOpts{reportopts_=ropts}}
                ("?", str "help")
               ,("LEFT", str "back")
 --              ,("RIGHT", str "transaction")
-              ,("T", renderToggle (tree_ ropts) "flat(-subs)" "tree(+subs)") -- rsForceInclusive may override, but use tree_ to ensure a visible toggle effect
+
+              -- tree/list mode - rsForceInclusive may override, but use tree_ to ensure a visible toggle effect
+              ,("t", renderToggle (tree_ ropts) "list(-subs)" "tree(+subs)")
+              -- ,("t", str "tree(+subs)")
+              -- ,("l", str "list(-subs)")
+
               ,("H", renderToggle (not ishistorical) "historical" "period")
-              ,("F", renderToggle (presentorfuture_ uopts == PFFuture) "present" "future") 
+              ,("F", renderToggle1 (isJust $ forecast_ ropts) "forecast")
 --               ,("a", "add")
 --               ,("g", "reload")
 --               ,("q", "quit")
               ]
 
-rsDraw _ = error "draw function called with wrong screen type, should not happen"
+rsDraw _ = error "draw function called with wrong screen type, should not happen"  -- PARTIAL:
 
 rsDrawItem :: (Int,Int,Int,Int,Int) -> Bool -> RegisterScreenItem -> Widget Name
 rsDrawItem (datewidth,descwidth,acctswidth,changewidth,balwidth) selected RegisterScreenItem{..} =
   Widget Greedy Fixed $ do
     render $
-      str (fitString (Just datewidth) (Just datewidth) True True rsItemDate) <+>
-      str " " <+>
-      str (fitString (Just 1) (Just 1) True True (show rsItemStatus)) <+>
-      str " " <+>
-      str (fitString (Just descwidth) (Just descwidth) True True rsItemDescription) <+>
-      str "  " <+>
-      str (fitString (Just acctswidth) (Just acctswidth) True True rsItemOtherAccounts) <+>
-      str "   " <+>
-      withAttr changeattr (str (fitString (Just changewidth) (Just changewidth) True False rsItemChangeAmount)) <+>
-      str "   " <+>
-      withAttr balattr (str (fitString (Just balwidth) (Just balwidth) True False rsItemBalanceAmount))
+      txt (fitText (Just datewidth) (Just datewidth) True True rsItemDate) <+>
+      txt " " <+>
+      txt (fitText (Just 1) (Just 1) True True (T.pack $ show rsItemStatus)) <+>
+      txt " " <+>
+      txt (fitText (Just descwidth) (Just descwidth) True True rsItemDescription) <+>
+      txt "  " <+>
+      txt (fitText (Just acctswidth) (Just acctswidth) True True rsItemOtherAccounts) <+>
+      txt "   " <+>
+      withAttr changeattr (txt $ fitText (Just changewidth) (Just changewidth) True False changeAmt) <+>
+      txt "   " <+>
+      withAttr balattr (txt $ fitText (Just balwidth) (Just balwidth) True False balanceAmt)
   where
-    changeattr | '-' `elem` rsItemChangeAmount = sel $ "list" <> "amount" <> "decrease"
-               | otherwise                     = sel $ "list" <> "amount" <> "increase"
-    balattr    | '-' `elem` rsItemBalanceAmount = sel $ "list" <> "balance" <> "negative"
-               | otherwise                      = sel $ "list" <> "balance" <> "positive"
+    changeAmt  = wbToText rsItemChangeAmount
+    balanceAmt = wbToText rsItemBalanceAmount
+    changeattr | T.any (=='-') changeAmt  = sel $ "list" <> "amount" <> "decrease"
+               | otherwise                = sel $ "list" <> "amount" <> "increase"
+    balattr    | T.any (=='-') balanceAmt = sel $ "list" <> "balance" <> "negative"
+               | otherwise                = sel $ "list" <> "balance" <> "positive"
     sel | selected  = (<> "selected")
         | otherwise = id
 
@@ -271,11 +292,11 @@ rsHandle ui@UIState{
   ,aMode=mode
   } ev = do
   d <- liftIO getCurrentDay
-  let 
+  let
     journalspan = journalDateSpan False j
-    nonblanks = V.takeWhile (not . null . rsItemDate) $ rsList^.listElementsL
+    nonblanks = V.takeWhile (not . T.null . rsItemDate) $ rsList^.listElementsL
     lastnonblankidx = max 0 (length nonblanks - 1)
-  
+
   case mode of
     Minibuffer ed ->
       case ev of
@@ -292,7 +313,7 @@ rsHandle ui@UIState{
 
     Help ->
       case ev of
-        VtyEvent (EvKey (KChar 'q') []) -> halt ui
+        -- VtyEvent (EvKey (KChar 'q') []) -> halt ui
         VtyEvent (EvKey (KChar 'l') [MCtrl]) -> redraw ui
         VtyEvent (EvKey (KChar 'z') [MCtrl]) -> suspend ui
         _                    -> helpHandle ui ev
@@ -311,25 +332,27 @@ rsHandle ui@UIState{
         VtyEvent (EvKey (KChar 'I') []) -> continue $ uiCheckBalanceAssertions d (toggleIgnoreBalanceAssertions ui)
         VtyEvent (EvKey (KChar 'a') []) -> suspendAndResume $ clearScreen >> setCursorPosition 0 0 >> add copts j >> uiReloadJournalIfChanged copts d j ui
         VtyEvent (EvKey (KChar 'A') []) -> suspendAndResume $ void (runIadd (journalFilePath j)) >> uiReloadJournalIfChanged copts d j ui
-        VtyEvent (EvKey (KChar 't') [])    -> continue $ regenerateScreens j d $ setReportPeriod (DayPeriod d) ui
+        VtyEvent (EvKey (KChar 'T') []) -> continue $ regenerateScreens j d $ setReportPeriod (DayPeriod d) ui
         VtyEvent (EvKey (KChar 'E') []) -> suspendAndResume $ void (runEditor pos f) >> uiReloadJournalIfChanged copts d j ui
           where
             (pos,f) = case listSelectedElement rsList of
-                        Nothing -> (endPos, journalFilePath j)
+                        Nothing -> (endPosition, journalFilePath j)
                         Just (_, RegisterScreenItem{
                           rsItemTransaction=Transaction{tsourcepos=GenericSourcePos f l c}}) -> (Just (l, Just c),f)
                         Just (_, RegisterScreenItem{
                           rsItemTransaction=Transaction{tsourcepos=JournalSourcePos f (l,_)}}) -> (Just (l, Nothing),f)
 
         -- display mode/query toggles
+        VtyEvent (EvKey (KChar 'B') []) -> rsCenterAndContinue $ regenerateScreens j d $ toggleCost ui
+        VtyEvent (EvKey (KChar 'V') []) -> rsCenterAndContinue $ regenerateScreens j d $ toggleValue ui
         VtyEvent (EvKey (KChar 'H') []) -> rsCenterAndContinue $ regenerateScreens j d $ toggleHistorical ui
-        VtyEvent (EvKey (KChar 'T') []) -> rsCenterAndContinue $ regenerateScreens j d $ toggleTree ui
+        VtyEvent (EvKey (KChar 't') []) -> rsCenterAndContinue $ regenerateScreens j d $ toggleTree ui
         VtyEvent (EvKey (KChar 'Z') []) -> rsCenterAndContinue $ regenerateScreens j d $ toggleEmpty ui
         VtyEvent (EvKey (KChar 'R') []) -> rsCenterAndContinue $ regenerateScreens j d $ toggleReal ui
         VtyEvent (EvKey (KChar 'U') []) -> rsCenterAndContinue $ regenerateScreens j d $ toggleUnmarked ui
         VtyEvent (EvKey (KChar 'P') []) -> rsCenterAndContinue $ regenerateScreens j d $ togglePending ui
         VtyEvent (EvKey (KChar 'C') []) -> rsCenterAndContinue $ regenerateScreens j d $ toggleCleared ui
-        VtyEvent (EvKey (KChar 'F') []) -> rsCenterAndContinue $ regenerateScreens j d $ toggleFuture ui
+        VtyEvent (EvKey (KChar 'F') []) -> rsCenterAndContinue $ regenerateScreens j d $ toggleForecast d ui
 
         VtyEvent (EvKey (KChar '/') []) -> continue $ regenerateScreens j d $ showMinibuffer ui
         VtyEvent (EvKey (KDown)     [MShift]) -> continue $ regenerateScreens j d $ shrinkReportPeriod d ui
@@ -348,7 +371,7 @@ rsHandle ui@UIState{
               let
                 ts = map rsItemTransaction $ V.toList $ nonblanks
                 numberedts = zip [1..] ts
-                i = fromIntegral $ maybe 0 (+1) $ elemIndex t ts -- XXX
+                i = maybe 0 (toInteger . (+1)) $ elemIndex t ts -- XXX
               in
                 continue $ screenEnter d transactionScreen{tsTransaction=(i,t)
                                                           ,tsTransactions=numberedts
@@ -358,9 +381,9 @@ rsHandle ui@UIState{
         -- prevent moving down over blank padding items;
         -- instead scroll down by one, until maximally scrolled - shows the end has been reached
         VtyEvent e | e `elem` moveDownEvents, isBlankElement mnextelement -> do
-          vScrollBy (viewportScroll $ rsList^.listNameL) 1 
+          vScrollBy (viewportScroll $ rsList^.listNameL) 1
           continue ui
-          where 
+          where
             mnextelement = listSelectedElement $ listMoveDown rsList
 
         -- if page down or end leads to a blank padding item, stop at last non-blank
@@ -373,7 +396,7 @@ rsHandle ui@UIState{
             continue ui{aScreen=s{rsList=list'}}
           else
             continue ui{aScreen=s{rsList=list}}
-          
+
         -- fall through to the list's event handler (handles other [pg]up/down events)
         VtyEvent ev -> do
           let ev' = normaliseMovementKeys ev
@@ -384,9 +407,9 @@ rsHandle ui@UIState{
         MouseDown _ _ _ _ -> continue ui
         MouseUp _ _ _     -> continue ui
 
-rsHandle _ _ = error "event handler called with wrong screen type, should not happen"
+rsHandle _ _ = error "event handler called with wrong screen type, should not happen"  -- PARTIAL:
 
-isBlankElement mel = ((rsItemDate . snd) <$> mel) == Just "" 
+isBlankElement mel = ((rsItemDate . snd) <$> mel) == Just ""
 
 rsCenterAndContinue ui = do
   scrollSelectionToMiddle $ rsList $ aScreen ui

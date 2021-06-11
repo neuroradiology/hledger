@@ -1,13 +1,15 @@
 cashflow, cf\
-This command displays a simple cashflow statement, showing changes
-in "cash" accounts. It assumes that these accounts are under a top-level
-`asset` account (case insensitive, plural forms also allowed) and do not
-contain `receivable` or `A/R` in their name.
-Note this report shows all account balances with normal positive sign
-(like conventional financial statements, unlike balance/print/register)
-(experimental).
+This command displays a cashflow statement, showing the inflows and
+outflows affecting "cash" (ie, liquid) assets.
+Amounts are shown with normal positive sign, as in conventional
+financial statements.
 
-_FLAGS_
+_FLAGS
+
+The "cash" accounts shown are those accounts declared with the `Cash`
+type, or otherwise all accounts under a top-level `asset` account
+(case insensitive, plural allowed) which do not have `fixed`,
+`investment`, `receivable` or `A/R` in their name.
 
 Example:
 ```shell
@@ -26,12 +28,13 @@ Total:
                  $-1
 ```
 
-With a [reporting interval](#reporting-interval), multiple columns
-will be shown, one for each report period.
-Normally cashflow shows changes in assets per period, though
-as with [multicolumn balance reports](#multicolumn-balance-reports)
-you can alter the report mode with `--change`/`--cumulative`/`--historical`.
+This command is a higher-level variant of the [`balance`](#balance) command,
+and supports many of that command's features, such as multi-period reports.
+It is similar to `hledger balance assets not:fixed not:investment not:receivable`,
+but with smarter account detection.
 
-This command also supports
-[output destination](/manual.html#output-destination) and
-[output format](/manual.html#output-format) selection.
+This command also supports the
+[output destination](hledger.html#output-destination) and
+[output format](hledger.html#output-format) options
+The output formats supported are
+`txt`, `csv`, `html`, and (experimental) `json`.

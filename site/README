@@ -1,4 +1,0 @@
-Source files for the hledger.org website. 
-To render this, run ./Shake website. 
-This will add the web manuals' markdown to this directory, 
-render all markdown as html, and copy static files, to site/_site/.

@@ -8,34 +8,33 @@ are thousands separated by comma, significant decimal places and so on.
 -}
 
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE CPP #-}
 
 module Hledger.Data.Commodity
 where
+import Control.Applicative (liftA2)
 import Data.Char (isDigit)
 import Data.List
 import Data.Maybe (fromMaybe)
-#if !(MIN_VERSION_base(4,11,0))
-import Data.Monoid
-#endif
 import qualified Data.Text as T
 -- import qualified Data.Map as M
 
 import Hledger.Data.Types
 import Hledger.Utils
 
+-- Show space-containing commodity symbols quoted, as they are in a journal.
+showCommoditySymbol = textQuoteIfNeeded
 
 -- characters that may not be used in a non-quoted commodity symbol
-nonsimplecommoditychars = "0123456789-+.@*;\n \"{}=" :: String
-
 isNonsimpleCommodityChar :: Char -> Bool
-isNonsimpleCommodityChar c = isDigit c || c `textElem` otherChars
- where
-   otherChars = "-+.@*;\n \"{}=" :: T.Text
-   textElem = T.any . (==)
+isNonsimpleCommodityChar = liftA2 (||) isDigit isOther
+  where
+    otherChars = "-+.@*;\t\n \"{}=" :: T.Text
+    isOther c = T.any (==c) otherChars
 
-quoteCommoditySymbolIfNeeded s | T.any (isNonsimpleCommodityChar) s = "\"" <> s <> "\""
-                               | otherwise = s
+quoteCommoditySymbolIfNeeded :: T.Text -> T.Text
+quoteCommoditySymbolIfNeeded s
+  | T.any isNonsimpleCommodityChar s = "\"" <> s <> "\""
+  | otherwise = s
 
 commodity = ""
 
@@ -58,7 +57,7 @@ commoditysymbols =
 -- | Look up one of the sample commodities' symbol by name.
 comm :: String -> CommoditySymbol
 comm name = snd $ fromMaybe
-              (error' "commodity lookup failed")
+              (error' "commodity lookup failed")  -- PARTIAL:
               (find (\n -> fst n == name) commoditysymbols)
 
 -- | Find the conversion rate between two commodities. Currently returns 1.

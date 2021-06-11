@@ -1,7 +1,7 @@
 {- | Rendering & misc. helpers. -}
 
+{-# LANGUAGE CPP               #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE CPP #-}
 
 module Hledger.UI.UIUtils (
    borderDepthStr
@@ -19,6 +19,7 @@ module Hledger.UI.UIUtils (
   ,moveUpEvents
   ,normaliseMovementKeys
   ,renderToggle
+  ,renderToggle1
   ,replaceHiddenAccountsNameWith
   ,scrollSelectionToMiddle
   ,suspend
@@ -34,16 +35,12 @@ import Brick.Widgets.Edit
 import Brick.Widgets.List (List, listSelectedL, listNameL, listItemHeightL)
 import Control.Monad.IO.Class
 import Data.List
-import Data.Maybe
-#if !(MIN_VERSION_base(4,11,0))
-import Data.Monoid
-#endif
+import qualified Data.Text as T
 import Graphics.Vty
   (Event(..),Key(..),Modifier(..),Vty(..),Color,Attr,currentAttr,refresh
   -- ,Output(displayBounds,mkDisplayContext),DisplayContext(..)
   )
 import Lens.Micro.Platform
-import System.Environment
 
 import Hledger hiding (Color)
 import Hledger.Cli (CliOpts)
@@ -59,7 +56,7 @@ suspendSignal = return ()
 #else
 import System.Posix.Signals
 suspendSignal :: IO ()
-suspendSignal = raiseSignal sigSTOP 
+suspendSignal = raiseSignal sigSTOP
 #endif
 
 -- | On posix platforms, suspend the program using the STOP signal,
@@ -89,53 +86,54 @@ helpDialog _copts =
     c <- getContext
     render $
       withDefAttr "help" $
-      renderDialog (dialog (Just "Help (?/LEFT/ESC to close)") Nothing (c^.availWidthL)) $ -- (Just (0,[("ok",())]))
-      padTop (Pad 1) $ padLeft (Pad 1) $ padRight (Pad 1) $
+      renderDialog (dialog (Just "Help (LEFT/ESC/?/q to close help)") Nothing (c^.availWidthL)) $ -- (Just (0,[("ok",())]))
+      padTop (Pad 0) $ padLeft (Pad 1) $ padRight (Pad 1) $
         vBox [
            hBox [
               padRight (Pad 1) $
                 vBox [
                    withAttr ("help" <> "heading") $ str "Navigation"
-                  ,renderKey ("UP/DOWN/PUP/PDN/HOME/END/emacs/vi keys", "")
-                  ,str "      move selection"
-                  ,renderKey ("RIGHT", "show account txns, txn detail")
-                  ,renderKey ("LEFT ", "go back")
-                  ,renderKey ("ESC  ", "cancel or reset")
-                  ,str " "
-                  ,withAttr ("help" <> "heading") $ str "Report period"
-                  ,renderKey ("S-DOWN /S-UP  ", "shrink/grow period")
-                  ,renderKey ("S-RIGHT/S-LEFT", "next/previous period")
-                  ,renderKey ("t             ", "set period to today")
+                  ,renderKey ("UP/DOWN/PUP/PDN/HOME/END/k/j/C-p/C-n", "")
+                  ,str "     move selection up/down"
+                  ,renderKey ("RIGHT/l/C-f", "show txns, or txn detail")
+                  ,renderKey ("LEFT/h/C-b ", "go back")
+                  ,renderKey ("ESC ", "cancel, or reset app state")
+
                   ,str " "
                   ,withAttr ("help" <> "heading") $ str "Accounts screen"
-                  ,renderKey ("-+0123456789 ", "set depth limit")
-                  ,renderKey ("T ", "toggle tree/flat mode")
-                  ,renderKey ("H ", "historical end balance/period change")
+                  ,renderKey ("1234567890-+ ", "set/adjust depth limit")
+                  ,renderKey ("t ", "toggle accounts tree/list mode")
+                  ,renderKey ("H ", "toggle historical balance/change")
                   ,str " "
                   ,withAttr ("help" <> "heading") $ str "Register screen"
-                  ,renderKey ("T ", "toggle subaccount txns\n(and accounts screen tree/flat mode)")
-                  ,renderKey ("H ", "show historical total/period total")
+                  ,renderKey ("t ", "toggle subaccount txns\n(and accounts tree/list mode)")
+                  ,renderKey ("H ", "toggle historical/period total")
+                  ,str " "
+                  ,withAttr ("help" <> "heading") $ str "Help"
+                  ,renderKey ("?    ", "toggle this help")
+                  ,renderKey ("p/m/i", "while help is open:\nshow manual in pager/man/info")
                   ,str " "
                 ]
              ,padLeft (Pad 1) $ padRight (Pad 0) $
                 vBox [
                    withAttr ("help" <> "heading") $ str "Filtering"
                   ,renderKey ("/   ", "set a filter query")
-                  ,renderKey ("UPC ", "show unmarked/pending/cleared") 
-                  ,renderKey ("F   ", "show future/present txns")
+                  ,renderKey ("F   ", "show future & periodic txns")
                   ,renderKey ("R   ", "show real/all postings")
                   ,renderKey ("Z   ", "show nonzero/all amounts")
-                  ,renderKey ("DEL ", "remove filters")
-                  ,str " "
-                  ,withAttr ("help" <> "heading") $ str "Help"
-                  ,renderKey ("?   ", "toggle this help")
-                  ,renderKey ("pmi ", "(with this help open)\nshow manual in pager/man/info")
+                  ,renderKey ("U/P/C ", "show unmarked/pending/cleared")
+                  ,renderKey ("S-DOWN /S-UP  ", "shrink/grow period")
+                  ,renderKey ("S-RIGHT/S-LEFT", "next/previous period")
+                  ,renderKey ("T             ", "set period to today")
+                  ,renderKey ("DEL ", "reset filters")
                   ,str " "
                   ,withAttr ("help" <> "heading") $ str "Other"
                   ,renderKey ("a   ", "add transaction (hledger add)")
                   ,renderKey ("A   ", "add transaction (hledger-iadd)")
+                  ,renderKey ("B   ", "show amounts/costs")
                   ,renderKey ("E   ", "open editor")
                   ,renderKey ("I   ", "toggle balance assertions")
+                  ,renderKey ("V   ", "show amounts/market values")
                   ,renderKey ("g   ", "reload data")
                   ,renderKey ("C-l ", "redraw & recenter")
                   ,renderKey ("C-z ", "suspend")
@@ -163,26 +161,21 @@ helpDialog _copts =
 -- May invoke $PAGER, less, man or info, which is likely to fail on MS Windows, TODO.
 helpHandle :: UIState -> BrickEvent Name AppEvent -> EventM Name (Next UIState)
 helpHandle ui ev = do
-  pagerprog <- liftIO $ fromMaybe "less" <$> lookupEnv "PAGER"
   case ev of
-    VtyEvent e | e `elem` (moveLeftEvents ++ [EvKey KEsc [], EvKey (KChar '?') []]) -> continue $ setMode Normal ui
-    VtyEvent (EvKey (KChar 'p') []) -> suspendAndResume $ runPagerForTopic pagerprog "hledger-ui" >> return ui'
-    VtyEvent (EvKey (KChar 'm') []) -> suspendAndResume $ runManForTopic             "hledger-ui" >> return ui'
-    VtyEvent (EvKey (KChar 'i') []) -> suspendAndResume $ runInfoForTopic            "hledger-ui" >> return ui'
+    VtyEvent e | e `elem` closeHelpEvents -> continue $ setMode Normal ui
+    VtyEvent (EvKey (KChar 'p') []) -> suspendAndResume $ runPagerForTopic "hledger-ui" Nothing >> return ui'
+    VtyEvent (EvKey (KChar 'm') []) -> suspendAndResume $ runManForTopic   "hledger-ui" Nothing >> return ui'
+    VtyEvent (EvKey (KChar 'i') []) -> suspendAndResume $ runInfoForTopic  "hledger-ui" Nothing >> return ui'
     _ -> continue ui
   where
     ui' = setMode Normal ui
+    closeHelpEvents = moveLeftEvents ++ [EvKey KEsc [], EvKey (KChar '?') [], EvKey (KChar 'q') []]
 
 -- | Draw the minibuffer.
 minibuffer :: Editor String Name -> Widget Name
 minibuffer ed =
   forceAttr ("border" <> "minibuffer") $
-  hBox $
-#if MIN_VERSION_brick(0,19,0)
-  [txt "filter: ", renderEditor (str . unlines) True ed]
-#else
-  [txt "filter: ", renderEditor True ed]
-#endif
+  hBox [txt "filter: ", renderEditor (str . unlines) True ed]
 
 borderQueryStr :: String -> Widget Name
 borderQueryStr ""  = str ""
@@ -194,7 +187,7 @@ borderDepthStr (Just d) = str " to depth " <+> withAttr ("border" <> "query") (s
 
 borderPeriodStr :: String -> Period -> Widget Name
 borderPeriodStr _           PeriodAll = str ""
-borderPeriodStr preposition p         = str (" "++preposition++" ") <+> withAttr ("border" <> "query") (str $ showPeriod p)
+borderPeriodStr preposition p         = str (" "++preposition++" ") <+> withAttr ("border" <> "query") (str . T.unpack $ showPeriod p)
 
 borderKeysStr :: [(String,String)] -> Widget Name
 borderKeysStr = borderKeysStr' . map (\(a,b) -> (a, str b))
@@ -208,13 +201,21 @@ borderKeysStr' keydescs =
     -- sep = str " | "
     sep = str " "
 
--- | Render the two states of a toggle, highlighting the active one. 
+-- | Show both states of a toggle ("aaa/bbb"), highlighting the active one.
 renderToggle :: Bool -> String -> String -> Widget Name
 renderToggle isright l r =
   let bold = withAttr ("border" <> "selected") in
   if isright
-  then str (l++"/") <+> bold (str r) 
+  then str (l++"/") <+> bold (str r)
   else bold (str l) <+> str ("/"++r)
+
+-- | Show a toggle's label, highlighted (bold) when the toggle is active.
+renderToggle1 :: Bool -> String -> Widget Name
+renderToggle1 isactive l =
+  let bold = withAttr ("border" <> "selected") in
+  if isactive
+  then bold (str l)
+  else str l
 
 -- temporary shenanigans:
 
@@ -310,13 +311,13 @@ withBorderAttr attr = updateAttrMap (applyAttrMappings [("border", attr)])
 --scrollToTop :: List Name e -> EventM Name ()
 --scrollToTop list = do
 --  let vpname = list^.listNameL
---  setTop (viewportScroll vpname) 0 
+--  setTop (viewportScroll vpname) 0
 
 -- | Scroll a list's viewport so that the selected item is centered in the
 -- middle of the display area.
 scrollSelectionToMiddle :: List Name e -> EventM Name ()
 scrollSelectionToMiddle list = do
-  let mselectedrow = list^.listSelectedL 
+  let mselectedrow = list^.listSelectedL
       vpname = list^.listNameL
   mvp <- lookupViewport vpname
   case (mselectedrow, mvp) of
@@ -326,7 +327,7 @@ scrollSelectionToMiddle list = do
         vpheight     = dbg4 "vpheight" $ vp^.vpSize._2
         itemsperpage = dbg4 "itemsperpage" $ vpheight `div` itemheight
         toprow       = dbg4 "toprow" $ max 0 (selectedrow - (itemsperpage `div` 2)) -- assuming ViewportScroll's row offset is measured in list items not screen rows
-      setTop (viewportScroll vpname) toprow 
+      setTop (viewportScroll vpname) toprow
     _ -> return ()
 
 --                 arrow keys       vi keys               emacs keys

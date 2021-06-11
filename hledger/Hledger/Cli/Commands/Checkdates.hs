@@ -1,51 +1,53 @@
 {-# LANGUAGE NoOverloadedStrings #-} -- prevent trouble if turned on in ghci
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell     #-}
 
 module Hledger.Cli.Commands.Checkdates (
   checkdatesmode
  ,checkdates
 ) where
 
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Hledger
 import Hledger.Cli.CliOptions
 import System.Console.CmdArgs.Explicit
-import Text.Printf
+import System.Exit
 
 checkdatesmode :: Mode RawOpts
 checkdatesmode = hledgerCommandMode
   $(embedFileRelative "Hledger/Cli/Commands/Checkdates.txt")
-  [flagNone ["strict"] (setboolopt "strict") "makes date comparing strict"]
+  [flagNone ["unique"] (setboolopt "unique") "require that dates are unique"]
   [generalflagsgroup1]
-  []
+  hiddenflags
   ([], Just $ argsFlag "[QUERY]")
 
 checkdates :: CliOpts -> Journal -> IO ()
-checkdates CliOpts{rawopts_=rawopts,reportopts_=ropts} j = do
-  d <- getCurrentDay
-  let ropts_ = ropts{accountlistmode_=ALFlat}
-  let q = queryFromOpts d ropts_
-  let ts = filter (q `matchesTransaction`) $
-           jtxns $ journalSelectingAmountFromOpts ropts j
-  let strict = boolopt "strict" rawopts
+checkdates CliOpts{rawopts_=rawopts,reportspec_=rspec} j = do
+  let ropts = (rsOpts rspec){accountlistmode_=ALFlat}
+  let ts = filter (rsQuery rspec `matchesTransaction`) $
+           jtxns $ journalApplyValuationFromOpts rspec{rsOpts=ropts} j
+  -- pprint rawopts
+  let unique = boolopt "--unique" rawopts  -- TEMP: it's this for hledger check dates
+            || boolopt "unique" rawopts    -- and this for hledger check-dates (for some reason)
   let date = transactionDateFn ropts
   let compare a b =
-        if strict
+        if unique
         then date a <  date b
         else date a <= date b
   case checkTransactions compare ts of
-   FoldAcc{fa_previous=Nothing} -> putStrLn "ok (empty journal)"
-   FoldAcc{fa_error=Nothing}    -> putStrLn "ok"
-   FoldAcc{fa_error=Just error, fa_previous=Just previous} ->
-    putStrLn $ printf ("ERROR: transaction out of%s date order"
-     ++ "\nPrevious date: %s"
-     ++ "\nDate: %s"
-     ++ "\nLocation: %s"
-     ++ "\nTransaction:\n\n%s")
-     (if strict then " STRICT" else "")
-     (show $ date previous)
-     (show $ date error)
-     (show $ tsourcepos error)
-     (showTransactionUnelided error)
+    FoldAcc{fa_previous=Nothing} -> return ()
+    FoldAcc{fa_error=Nothing}    -> return ()
+    FoldAcc{fa_error=Just error, fa_previous=Just previous} -> do
+      let
+        uniquestr = T.pack $ if unique then " and/or not unique" else ""
+        positionstr = T.pack . showGenericSourcePos $ tsourcepos error
+        txn1str = linesPrepend  (T.pack "  ")               $ showTransaction previous
+        txn2str = linesPrepend2 (T.pack "> ") (T.pack "  ") $ showTransaction error
+      T.putStrLn $
+        T.pack "Error: transaction date is out of order"
+        <> uniquestr <> T.pack "\nat " <> positionstr <> T.pack ":\n\n"
+        <> txn1str <> txn2str
+      exitFailure
 
 data FoldAcc a b = FoldAcc
  { fa_error    :: Maybe a

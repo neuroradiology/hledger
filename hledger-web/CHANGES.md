@@ -1,7 +1,172 @@
 User-visible changes in hledger-web.
 See also the hledger changelog.
 
-# c9e16b83
+# 1.21 2021-03-10
+
+- Register: a date range can be selected by dragging over a region on
+  the chart. (Arnout Engelen, #1471)
+
+- Add form: the description field's autocompletions now also offer
+  declared and used payee names.
+
+- New flags `--man` and `--info` open the man page or info manual.
+  (See hledger changelog)
+
+# 1.20.4 2021-01-29
+
+- Use hledger 1.20.4.
+
+# 1.20.3 2021-01-14
+
+- Use hledger 1.20.3.
+
+# 1.20.2 2020-12-28
+
+- Fix the info manual's node structure.
+
+- Use hledger 1.20.2.
+
+# 1.20.1 2020-12-06
+
+- don't hang when reloading the journal, eg after adding a transaction
+  or editing the file. (#1409)
+
+# 1.20 2020-12-05
+
+- hledger-web's test suite is re-enabled, now included in the main executable.
+  hledger-web --test [-- HSPECARGS] runs it.
+
+- Fix --forecast, broken in hledger-web since 1.18 (#1390)
+
+- Fix unescaped slashes in hledger-web description on hackage  (TANIGUCHI Kohei)
+
+- The hledger-web version string is now provided at /version, as JSON (#1152)
+
+- The session file (hledger-web_client_session_key.aes) is now written in 
+  $XDG_DATA_DIR rather than the current directory.
+  Eg on non-Windows systems this is ~/.cache/ by default (cf
+  https://hackage.haskell.org/package/directory/docs/System-Directory.html#t:XdgDirectory).
+  (#1344) (Félix Sipma)
+
+# 1.19.1 2020-09-07
+
+- Allow megaparsec 9
+
+- Drop redundant semigroups dependency (Felix Yan)
+
+# 1.19 2020-09-01
+
+- Queries containing a malformed regular expression (eg the single
+  character `?`) now show a tidy error message instead "internal
+  server error" (Stephen Morgan, Simon Michael) (#1245)
+
+- In account registers, a transaction dated outside the report period
+  now is not shown even if it has postings dated inside the report
+  period.
+
+- Added a missing lower bound for aeson, making cabal installs more
+  reliable. (#1268)
+
+# 1.18.1 2020-06-21
+
+- fix some doc typos (Martin Michlmayr)
+
+# 1.18 2020-06-07
+
+- The filter query is now preserved when clicking a different account
+  in the sidebar. (Henning Thielemann)
+
+- Hyperlinks are now more robust when there are multiple journal
+  files, eg links from register to journal now work properly.
+  (#1041) (Henning Thielemann)
+
+## add form
+
+- Fixed a 2016 regression causing too many rows to be added by
+  keypresses in the last amount field or CTRL-plus (#422, #1059).
+
+- Always start with four rows when opened.
+
+- Drop unneeded C-minus/C-plus keys & related help text.
+
+
+# 1.17.1 2020-03-19
+
+- require newer Decimal, math-functions libs to ensure consistent
+  rounding behaviour, even when built with old GHCs/snapshots. 
+  hledger uses banker's rounding (rounds to nearest even number, eg
+  0.5 displayed with zero decimal places is "0").
+
+# 1.17 2020-03-01
+
+- Fonts have been improved on certain platforms. (David Zhang)
+
+- IPv6 is supported (Amarandus) (#1145)
+
+- The --host option can now take a local hostname (Amarandus) (#1145)
+
+- New --socket option to run hledger-web over an AF_UNIX socket file. (Carl Richard Theodor Schneider)
+  This allows running multiple instances of hledger-web on the same
+  system without having to manually choose a port for each instance,
+  which is helpful for running individual instances for multiple
+  users. In this scenario, the socket path is predictable, as it can
+  be derived from the username.
+
+- The edit and upload forms now normalise line endings, avoiding parse
+  errors (#1194). Summary of current behaviour:
+
+  - hledger add and import commands will append with (at least some)
+    unix line endings, possibly causing the file to have mixed line
+    endings
+
+  - hledger-web edit and upload forms will write the file with
+    the current system's native line endings, ie changing all
+    line endings if the file previously used foreign line endings.
+
+- Numbers in JSON output now provide a floating point Number
+  representation as well as our native Decimal object representation,
+  since the later can sometimes contain 255-digit integers. The
+  floating point numbers can have up to 10 decimal digits (and an
+  unbounded number of integer digits.)
+  Experimental, suggestions needed. (#1195)
+
+
+# 1.16.2 2020-01-14
+
+- add support for megaparsec 8 (#1175)
+
+- fix add form completions (#1156)
+
+# 1.16.1 2019-12-03
+
+- Drop unnecessary json (#1190), mtl-compat dependencies
+
+- use hledger 1.16.1, fixing GHC 8.0/8.2 build
+
+# 1.16 2019-12-01
+
+- add support for GHC 8.8, base-compat 0.11 (#1090).
+  For now, hledger-web needs an unreleased version of json.
+
+- drop support for GHC 7.10
+
+- Weeks in the add form's date picker now start on Mondays (#1109)
+  (Timofey Zakrevskiy)
+
+- The --cors option allows simple cross-origin requests to hledger-web
+  (Alejandro García Montoro)
+
+- The test suite has been disabled for now.
+
+# 1.15 2019-09-01
+
+- --serve-api disables the usual server-side web UI (leaving only the API routes)
+
+- register page: account names are hyperlinked
+
+- ?sidebar= now hides the sidebar, same as ?sidebar=0
+
+- fix "_create_locale could not be located" error on windows 7 (#1039)
 
 - use hledger 1.15
 

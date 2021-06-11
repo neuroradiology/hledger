@@ -1,4 +1,7 @@
-{-# LANGUAGE CPP, OverloadedStrings, QuasiQuotes #-}
+{-# LANGUAGE CPP               #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes       #-}
+
 -- | Settings are centralized, as much as possible, into this file. This
 -- includes database connection settings, static file locations, etc.
 -- In addition, you can configure a number of different aspects of Yesod
@@ -7,7 +10,6 @@
 module Hledger.Web.Settings where
 
 import Data.Default (def)
-import Data.Semigroup ((<>))
 import Data.Text (Text)
 import Data.Yaml
 import Language.Haskell.TH.Syntax (Q, Exp)
@@ -43,7 +45,10 @@ defport = 5000
 
 defbaseurl :: String -> Int -> String
 defbaseurl host port =
-  "http://" ++ host ++ if port /= 80 then ":" ++ show port else ""
+  if ':' `elem` host then
+    "http://[" ++ host ++ "]" ++ if port /= 80 then ":" ++ show port else ""
+  else
+    "http://" ++ host ++ if port /= 80 then ":" ++ show port else ""
 
 -- Static setting below. Changing these requires a recompile
 

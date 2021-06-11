@@ -1,8 +1,6 @@
 #!/bin/bash
-# Easy hledger installation script for POSIX systems.
-# Uses cabal if installed and stack is not,
-# or stack, which it will install if needed (or if --force-install-stack is used).
-# Requires bash and some other POSIX tools.
+# Easy hledger installation script for POSIX systems, requiring bash
+# and some other POSIX tools.
 # This is based on get-stack.sh which is copyright (c) 2015-2017, Stack contributors.
 
 #set -e  # causes trouble, https://github.com/simonmichael/hledger/issues/714
@@ -10,36 +8,34 @@ set -o pipefail
 
 usage() {
   cat <<HERE
-hledger-install.sh [-f|--force-install-stack] [-v|--verbose] [-s|--status] [--version] [-h|--help]
+hledger-install.sh version $HLEDGER_INSTALL_VERSION, installs hledger $HLEDGER_VERSION
 
-Installs the current release of hledger and related tools as reliably and
-quickly as possible on any POSIX system, using cabal (if installed and
-stack is not) or stack (installing it when needed or if --force-install-stack is used).
-With --status, just lists the currently installed hledger tools.
-Usage:
+hledger-install.sh [-f|--force-install-stack] [-s|--status] [-v|--verbose]
+                   [--version] [-h|--help]
 
- curl -sSLO http://hledger.org/hledger-install.sh  # or wget -qO- ...
- less hledger-install.sh       # security review
- bash [-x] hledger-install.sh  # to see commands being run, add -x
+This script builds and installs the current release of hledger and addons,
+on GHC-supporting POSIX system with bash installed, as reliably as possible.
+If cabal is installed and stack is not, and --force-install-stack is not used,
+it will use cabal; otherwise it will use stack, installing stack if needed.
 
-or if you prefer convenience to security:
+Run it the security-conscious way:
 
- curl -sSL http://hledger.org/hledger-install.sh | bash
+ curl -sSLO https://hledger.org/hledger-install.sh  # download
+ less hledger-install.sh                            # review for malware
+ bash -x hledger-install.sh                         # run it, showing commands
 
-Once hledger is installed, if you keep hledger-install.sh in \$PATH
-(and upgrade it periodically - currently this must be done manually):
+or the lazy way:
 
- hledger install        # upgrades other hledger tools
- hledger install -- -s  # shows installation status
+ curl -sSL https://hledger.org/hledger-install.sh | bash
 
-Note this can require significant time (minutes to hours), memory (~2G),
-and disk space (megabytes to a gigabyte) depending on your connection,
-machine and past installations. You can kill and rerun it without losing progress.
-(But note if you ctrl-C too vigorously, it might leave a
-"hackage-security-lock" directory which you'll need to remove manually,
-cf https://github.com/commercialhaskell/stack/issues/3055).
+Note this can require up to 2G each of free RAM and disk space,
+and could take between a minute and an hour.
+You can kill and rerun it without losing progress.
 
-Version $HLEDGER_INSTALL_VERSION, installs hledger $HLEDGER_VERSION
+To see what hledger tools are currently installed:
+
+ bash hledger-install.sh -s
+
 HERE
 }
 #TODO https://github.com/commercialhaskell/stack/issues/3055 https://github.com/haskell/hackage-security/issues/187
@@ -50,13 +46,13 @@ HERE
 HLEDGER_INSTALL_TOOL=hledger-install.sh
 
 # this script's version
-HLEDGER_INSTALL_VERSION=20190309
+HLEDGER_INSTALL_VERSION=20210314
 
 # stackage snapshot to use when installing with stack.
 # You can try specifying a different stackage version here, or 
 # commenting out this line to use your current global resolver,
 # to avoid unnecessary building.
-RESOLVER="--resolver=nightly-2019-03-09"
+RESOLVER="--resolver=lts-17.4"
 
 # things to be installed
 
@@ -64,7 +60,6 @@ HLEDGER_MAIN_TOOLS="\
 hledger \
 hledger-ui \
 hledger-web \
-hledger-api \
 "
 
 HLEDGER_OTHER_TOOLS="\
@@ -73,30 +68,20 @@ hledger-interest \
 "
 
 # latest hledger package versions; update often:
-HLEDGER_LIB_VERSION=1.14.1
-HLEDGER_VERSION=1.14.2
-HLEDGER_UI_VERSION=1.14.1
-HLEDGER_WEB_VERSION=1.14.1
-HLEDGER_API_VERSION=1.14
+HLEDGER_LIB_VERSION=1.21
+HLEDGER_VERSION=1.21
+HLEDGER_UI_VERSION=1.21
+HLEDGER_WEB_VERSION=1.21
+# addons:
+HLEDGER_IADD_VERSION=1.3.14
+HLEDGER_INTEREST_VERSION=1.6.1
 
-HLEDGER_IADD_VERSION=1.3.9
-HLEDGER_INTEREST_VERSION=1.5.3
-
-# extra dependencies that aren't in stackage:
+# any required dependencies that aren't in the stackage resolver above:
 EXTRA_DEPS="\
-brick-0.46 \
-text-zipper-0.10.1 \
-config-ini-0.2.4.0 \
-data-clist-0.1.2.2 \
-word-wrap-0.4.1 \
 "
-# cassava-megaparsec-2.0.0 \
-# config-ini-0.2.4.0 \
-# easytest-0.2.1 \
-# megaparsec-7.0.4 \
 
-# the oldest version of stack that might work:
-STACK_MIN_VERSION=1.7.1
+# the oldest version of stack that might possibly work:
+STACK_MIN_VERSION=2.3.1
 
 
 
@@ -329,7 +314,7 @@ do_osx_install() {
   echo ""
 }
 
-# Attempts to insall on FreeBSD.  Installs dependencies with
+# Attempts to install on FreeBSD.  Installs dependencies with
 # 'pkg install' and then downloads bindist.
 do_freebsd_install() {
   install_dependencies() {
@@ -935,7 +920,7 @@ if [[ $HELPFLAG ]] ; then
 fi
 
 if [[ $VERSIONFLAG ]] ; then
-  echo $HLEDGER_INSTALL_TOOL $HLEDGER_INSTALL_VERSION
+  echo "$HLEDGER_INSTALL_TOOL version $HLEDGER_INSTALL_VERSION, installs hledger $HLEDGER_VERSION"
   exit 0
 fi
 
@@ -948,7 +933,8 @@ else
   QUIET="true"
 fi
 
-echo "hledger-install.sh $HLEDGER_INSTALL_VERSION $(date)"
+date
+echo "$HLEDGER_INSTALL_TOOL version $HLEDGER_INSTALL_VERSION, installs hledger $HLEDGER_VERSION"
 
 # ensure ~/.local/bin/ in PATH
 # TODO should check ~/.cabal/bin if using cabal
@@ -969,7 +955,7 @@ quietly_run lsb_release -a
 
 # show current installed hledger packages
 echo
-echo "Install status before:"
+echo "Current install status:"
 print_installed_versions
 
 if [[ $STATUSFLAG ]] ; then
@@ -989,6 +975,8 @@ if has_stack ; then
   fi
   # install stack now (or if new enough, just print its precise version)
   ensure_stack
+  echo "Updating stack's package db to see latest packages"
+  try_info stack update
 # else if cabal is installed, use cabal
 elif has_cmd cabal ; then
   echo "no stack installed, cabal $(cabal --numeric-version) installed; using cabal to install hledger in $HOME/.cabal/bin"
@@ -1014,7 +1002,7 @@ fi
 
 if [[ $(cmpver "$(cmd_version hledger-ui 2>/dev/null)" $HLEDGER_UI_VERSION) = 2 ]]; then
   echo Installing hledger-ui
-  try_install hledger-ui-$HLEDGER_UI_VERSION hledger-$HLEDGER_VERSION hledger-lib-$HLEDGER_LIB_VERSION $EXTRA_DEPS \
+try_install hledger-ui-$HLEDGER_UI_VERSION hledger-$HLEDGER_VERSION hledger-lib-$HLEDGER_LIB_VERSION $EXTRA_DEPS \
     # brick-X.Y   # when hledger-iadd requires a special brick, use the same here to reduce rebuilding
   echo
 fi
@@ -1025,13 +1013,7 @@ if [[ $(cmpver "$(cmd_version hledger-web 2>/dev/null)" $HLEDGER_WEB_VERSION) = 
   echo
 fi
 
-if [[ $(cmpver "$(cmd_version hledger-api 2>/dev/null)" $HLEDGER_API_VERSION) = 2 ]]; then
-  echo Installing hledger-api
-  try_install hledger-api-$HLEDGER_API_VERSION hledger-$HLEDGER_VERSION hledger-lib-$HLEDGER_LIB_VERSION $EXTRA_DEPS
-  echo
-fi
-
-# Third-party addons. We sometimes build these with an older version
+# Third-party addons. We might build these with an older version
 # of hledger[-lib], if their bounds have not been updated yet.
 if [[ $(cmpver "$(cmd_version hledger-iadd 2>/dev/null)" $HLEDGER_IADD_VERSION) = 2 ]]; then
   echo Installing hledger-iadd
@@ -1047,7 +1029,7 @@ fi
 
 # show new installation status
 echo
-echo "Install status after:"
+echo "New install status:"
 print_installed_versions
 
 # warn if $HOME/.local/bin isn't in $PATH

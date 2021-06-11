@@ -1,9 +1,11 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
+
 module Hledger.Web.WebOptions where
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC
+import Data.ByteString.UTF8 (fromString)
 import Data.CaseInsensitive (CI, mk)
 import Control.Monad (join)
 import Data.Default (Default(def))
@@ -11,6 +13,8 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text (Text)
 import System.Environment (getArgs)
+import Network.Wai as WAI
+import Network.Wai.Middleware.Cors
 
 import Hledger.Cli hiding (progname, version)
 import Hledger.Web.Settings (defhost, defport, defbaseurl)
@@ -23,14 +27,28 @@ version = VERSION
 version = ""
 #endif
 prognameandversion :: String
-prognameandversion = progname ++ " " ++ version :: String
+prognameandversion = versiondescription progname
 
-webflags :: [Flag [(String, String)]]
+webflags :: [Flag RawOpts]
 webflags =
   [ flagNone
       ["serve", "server"]
       (setboolopt "serve")
       "serve and log requests, don't browse or auto-exit"
+  , flagNone
+      ["serve-api"]
+      (setboolopt "serve-api")
+      "like --serve, but serve only the JSON web API, without the server-side web UI"
+  , flagReq
+      ["cors"]
+      (\s opts -> Right $ setopt "cors" s opts)
+      "ORIGIN"
+      ("allow cross-origin requests from the specified origin; setting ORIGIN to \"*\" allows requests from any origin")
+  , flagReq
+      ["socket"]
+      (\s opts -> Right $ setopt "socket" s opts)
+      "SOCKET"
+      "use the given socket instead of the given IP and port (implies --serve)"
   , flagReq
       ["host"]
       (\s opts -> Right $ setopt "host" s opts)
@@ -61,13 +79,17 @@ webflags =
       (\s opts -> Right $ setopt "capabilities-header" s opts)
       "HTTPHEADER"
       "read capabilities to enable from a HTTP header, like X-Sandstorm-Permissions (default: disabled)"
+  , flagNone
+      ["test"]
+      (setboolopt "test")
+      "run hledger-web's tests and exit. hspec test runner args may follow a --, eg: hledger-web --test -- --help"
   ]
 
-webmode :: Mode [(String, String)]
+webmode :: Mode RawOpts
 webmode =
   (mode
      "hledger-web"
-     [("command", "web")]
+     (setopt "command" "web" def)
      "start serving the hledger web interface"
      (argsFlag "[PATTERNS]")
      [])
@@ -75,6 +97,7 @@ webmode =
       Group
       { groupUnnamed = webflags
       , groupHidden =
+          hiddenflags ++
           [ flagNone
               ["binary-filename"]
               (setboolopt "binary-filename")
@@ -88,6 +111,8 @@ webmode =
 -- hledger-web options, used in hledger-web and above
 data WebOpts = WebOpts
   { serve_ :: Bool
+  , serve_api_ :: Bool
+  , cors_ :: Maybe String
   , host_ :: String
   , port_ :: Int
   , base_url_ :: String
@@ -95,10 +120,23 @@ data WebOpts = WebOpts
   , capabilities_ :: [Capability]
   , capabilitiesHeader_ :: Maybe (CI ByteString)
   , cliopts_ :: CliOpts
+  , socket_ :: Maybe String
   } deriving (Show)
 
 defwebopts :: WebOpts
-defwebopts = WebOpts def def def def def [CapView, CapAdd] Nothing def
+defwebopts = WebOpts
+  { serve_              = False
+  , serve_api_          = False
+  , cors_               = Nothing
+  , host_               = ""
+  , port_               = def
+  , base_url_           = ""
+  , file_url_           = Nothing
+  , capabilities_       = [CapView, CapAdd]
+  , capabilitiesHeader_ = Nothing
+  , cliopts_            = def
+  , socket_             = Nothing
+  }
 
 instance Default WebOpts where def = defwebopts
 
@@ -107,18 +145,23 @@ rawOptsToWebOpts rawopts =
   checkWebOpts <$> do
     cliopts <- rawOptsToCliOpts rawopts
     let h = fromMaybe defhost $ maybestringopt "host" rawopts
-        p = fromMaybe defport $ maybeintopt "port" rawopts
+        p = fromMaybe defport $ maybeposintopt "port" rawopts
         b =
           maybe (defbaseurl h p) stripTrailingSlash $
           maybestringopt "base-url" rawopts
         caps' = join $ T.splitOn "," . T.pack <$> listofstringopt "capabilities" rawopts
         caps = case traverse capabilityFromText caps' of
-          Left e -> error' ("Unknown capability: " ++ T.unpack e)
+          Left e -> error' ("Unknown capability: " ++ T.unpack e)  -- PARTIAL:
           Right [] -> [CapView, CapAdd]
           Right xs -> xs
+        sock = stripTrailingSlash <$> maybestringopt "socket" rawopts
     return
       defwebopts
-      { serve_ = boolopt "serve" rawopts
+      { serve_ = case sock of
+          Just _ -> True
+          Nothing -> boolopt "serve" rawopts
+      , serve_api_ = boolopt "serve-api" rawopts
+      , cors_ = maybestringopt "cors" rawopts
       , host_ = h
       , port_ = p
       , base_url_ = b
@@ -126,21 +169,18 @@ rawOptsToWebOpts rawopts =
       , capabilities_ = caps
       , capabilitiesHeader_ = mk . BC.pack <$> maybestringopt "capabilities-header" rawopts
       , cliopts_ = cliopts
+      , socket_ = sock
       }
   where
     stripTrailingSlash = reverse . dropWhile (== '/') . reverse -- yesod don't like it
 
 checkWebOpts :: WebOpts -> WebOpts
-checkWebOpts wopts = do
-  let h = host_ wopts
-  if any (`notElem` (".0123456789" :: String)) h
-    then usageError $ "--host requires an IP address, not " ++ show h
-    else wopts
+checkWebOpts = id
 
 getHledgerWebOpts :: IO WebOpts
 getHledgerWebOpts = do
   args <- fmap replaceNumericFlags . expandArgsAt =<< getArgs
-  rawOptsToWebOpts . decodeRawOpts . either usageError id $ process webmode args
+  rawOptsToWebOpts . either usageError id $ process webmode args
 
 data Capability
   = CapView
@@ -159,3 +199,21 @@ capabilityFromBS "view" = Right CapView
 capabilityFromBS "add" = Right CapAdd
 capabilityFromBS "manage" = Right CapManage
 capabilityFromBS x = Left x
+
+simplePolicyWithOrigin :: Origin -> CorsResourcePolicy
+simplePolicyWithOrigin origin =
+    simpleCorsResourcePolicy { corsOrigins = Just ([origin], False) }
+
+
+corsPolicyFromString :: String -> WAI.Middleware
+corsPolicyFromString origin =
+  let
+    policy = case origin of
+        "*" -> simpleCorsResourcePolicy
+        url -> simplePolicyWithOrigin $ fromString url
+  in
+    cors (const $ Just policy)
+
+corsPolicy :: WebOpts -> (Application -> Application)
+corsPolicy opts =
+  maybe id corsPolicyFromString $ cors_ opts

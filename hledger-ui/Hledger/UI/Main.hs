@@ -3,40 +3,25 @@ hledger-ui - a hledger add-on providing a curses-style interface.
 Copyright (c) 2007-2015 Simon Michael <simon@joyful.com>
 Released under GPL version 3 or later.
 -}
-{-# LANGUAGE CPP #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings     #-}
 
 module Hledger.UI.Main where
 
--- import Control.Applicative
--- import Lens.Micro.Platform ((^.))
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async
-import Control.Monad
--- import Control.Monad.IO.Class (liftIO)
-#if !MIN_VERSION_vty(5,15,0)
-import Data.Default (def)
-#endif
--- import Data.Monoid              --
-import Data.List
-import Data.Maybe
--- import Data.Text (Text)
+import Control.Concurrent.Async (withAsync)
+import Control.Monad (forM_, void, when)
+import Data.List (find)
+import Data.List.Extra (nubSort)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
--- import Data.Time.Calendar
 import Graphics.Vty (mkVty)
-import Safe
-import System.Exit
-import System.Directory
-import System.FilePath
-import System.FSNotify
+import System.Directory (canonicalizePath)
+import System.FilePath (takeDirectory)
+import System.FSNotify (Event(Modified), isPollingManager, watchDir, withManager)
 import Brick
 
-#if MIN_VERSION_brick(0,16,0)
 import qualified Brick.BChan as BC
-#else
-import Control.Concurrent.Chan (newChan, writeChan)
-#endif
 
 import Hledger
 import Hledger.Cli hiding (progname,prognameandversion)
@@ -49,71 +34,92 @@ import Hledger.UI.RegisterScreen
 
 ----------------------------------------------------------------------
 
-#if MIN_VERSION_brick(0,16,0)
 newChan :: IO (BC.BChan a)
 newChan = BC.newBChan 10
 
 writeChan :: BC.BChan a -> a -> IO ()
 writeChan = BC.writeBChan
-#endif
 
 
 main :: IO ()
 main = do
-  opts <- getHledgerUIOpts
-  let copts = cliopts_ opts
-      copts' = copts
-        { inputopts_ = (inputopts_ copts) { auto_ = True }
-        , reportopts_ = (reportopts_ copts) { forecast_ = True }
-        }
-
+  opts@UIOpts{cliopts_=copts@CliOpts{inputopts_=_iopts,reportspec_=rspec@ReportSpec{rsOpts=ropts},rawopts_=rawopts}} <- getHledgerUIOpts
   -- when (debug_ $ cliopts_ opts) $ printf "%s\n" prognameandversion >> printf "opts: %s\n" (show opts)
-  run $ opts { cliopts_ = copts' }
-    where
-      run opts
-        | "help"            `inRawOpts` (rawopts_ $ cliopts_ opts) = putStr (showModeUsage uimode) >> exitSuccess
-        | "version"         `inRawOpts` (rawopts_ $ cliopts_ opts) = putStrLn prognameandversion >> exitSuccess
-        | "binary-filename" `inRawOpts` (rawopts_ $ cliopts_ opts) = putStrLn (binaryfilename progname)
-        | otherwise                                                = withJournalDo (cliopts_ opts) (runBrickUi opts)
+
+  -- always generate forecasted periodic transactions; their visibility will be toggled by the UI.
+  let copts' = copts{reportspec_=rspec{rsOpts=ropts{forecast_=Just $ fromMaybe nulldatespan (forecast_ ropts)}}}
+
+  case True of
+    _ | "help"            `inRawOpts` rawopts -> putStr (showModeUsage uimode)
+    _ | "info"            `inRawOpts` rawopts -> runInfoForTopic "hledger-ui" Nothing
+    _ | "man"             `inRawOpts` rawopts -> runManForTopic  "hledger-ui" Nothing
+    _ | "version"         `inRawOpts` rawopts -> putStrLn prognameandversion
+    _ | "binary-filename" `inRawOpts` rawopts -> putStrLn (binaryfilename progname)
+    _                                         -> withJournalDo copts' (runBrickUi opts)
 
 runBrickUi :: UIOpts -> Journal -> IO ()
-runBrickUi uopts@UIOpts{cliopts_=copts@CliOpts{inputopts_=_iopts,reportopts_=ropts}} j = do
+runBrickUi uopts@UIOpts{cliopts_=copts@CliOpts{inputopts_=_iopts,reportspec_=rspec@ReportSpec{rsOpts=ropts}}} j = do
   d <- getCurrentDay
 
   let
 
-    -- depth: is a bit different from other queries. In hledger cli,
-    -- - reportopts{depth_} indicates --depth options
-    -- - reportopts{query_} is the query arguments as a string
-    -- - the report query is based on both of these.
-    -- For hledger-ui, for now, move depth: arguments out of reportopts{query_}
-    -- and into reportopts{depth_}, so that depth and other kinds of filter query
-    -- can be displayed independently.
+    -- hledger-ui's query handling is currently in flux, mixing old and new approaches.
+    -- Related: #1340, #1383, #1387. Some notes and terminology:
+
+    -- The *startup query* is the Query generated at program startup, from
+    -- command line options, arguments, and the current date. hledger CLI
+    -- uses this.
+
+    -- hledger-ui/hledger-web allow the query to be changed at will, creating
+    -- a new *runtime query* each time.
+
+    -- The startup query or part of it can be used as a *constraint query*,
+    -- limiting all runtime queries. hledger-web does this with the startup
+    -- report period, never showing transactions outside those dates.
+    -- hledger-ui does not do this.
+
+    -- A query is a combination of multiple subqueries/terms, which are
+    -- generated from command line options and arguments, ui/web app runtime
+    -- state, and/or the current date.
+
+    -- Some subqueries are generated by parsing freeform user input, which
+    -- can fail. We don't want hledger users to see such failures except:
+
+    -- 1. at program startup, in which case the program exits
+    -- 2. after entering a new freeform query in hledger-ui/web, in which case
+    --    the change is rejected and the program keeps running
+
+    -- So we should parse those kinds of subquery only at those times. Any
+    -- subqueries which do not require parsing can be kept separate. And
+    -- these can be combined to make the full query when needed, eg when
+    -- hledger-ui screens are generating their data. (TODO)
+
+    -- Some parts of the query are also kept separate for UI reasons.
+    -- hledger-ui provides special UI for controlling depth (number keys), 
+    -- the report period (shift arrow keys), realness/status filters (RUPC keys) etc.
+    -- There is also a freeform text area for extra query terms (/ key).
+    -- It's cleaner and less conflicting to keep the former out of the latter.
+
     uopts' = uopts{
       cliopts_=copts{
-         reportopts_= ropts{
-            -- incorporate any depth: query args into depth_,
-            -- any date: query args into period_
-            depth_ =depthfromoptsandargs,
-            period_=periodfromoptsandargs,
-            query_ =unwords -- as in ReportOptions, with same limitations
-                    [v | (k,v) <- rawopts_ copts, k=="args", not $ any (`isPrefixOf` v) ["depth","date"]],
-            -- always disable boring account name eliding, unlike the CLI, for a more regular tree
-            no_elide_=True,
-            -- flip the default for items with zero amounts, show them by default
-            empty_=not $ empty_ ropts,
-            -- show historical balances by default, unlike the CLI
-            balancetype_=HistoricalBalance
+         reportspec_=rspec{
+            rsQuery=filteredQuery $ rsQuery rspec,  -- query with depth/date parts removed
+            rsOpts=ropts{
+               depth_ =queryDepth $ rsQuery rspec,  -- query's depth part
+               period_=periodfromoptsandargs,       -- query's date part
+               no_elide_=True,  -- avoid squashing boring account names, for a more regular tree (unlike hledger)
+               empty_=not $ empty_ ropts,  -- show zero items by default, hide them with -E (unlike hledger)
+               balancetype_=HistoricalBalance  -- show historical balances by default (unlike hledger)
+               }
             }
          }
       }
       where
-        q = queryFromOpts d ropts
-        depthfromoptsandargs = case queryDepth q of 99999 -> Nothing
-                                                    d     -> Just d
-        datespanfromargs = queryDateSpan (date2_ ropts) $ fst $ parseQuery d (T.pack $ query_ ropts)
+        datespanfromargs = queryDateSpan (date2_ ropts) $ rsQuery rspec
         periodfromoptsandargs =
           dateSpanAsPeriod $ spansIntersect [periodAsDateSpan $ period_ ropts, datespanfromargs]
+        filteredQuery q = simplifyQuery $ And [queryFromFlags ropts, filtered q]
+          where filtered = filterQuery (\x -> not $ queryIsDepth x || queryIsDate x)
 
     -- XXX move this stuff into Options, UIOpts
     theme = maybe defaultTheme (fromMaybe defaultTheme . getTheme) $
@@ -127,15 +133,18 @@ runBrickUi uopts@UIOpts{cliopts_=copts@CliOpts{inputopts_=_iopts,reportopts_=rop
       -- to that as usual.
       Just apat -> (rsSetAccount acct False registerScreen, [ascr'])
         where
-          acct = headDef
-                 (error' $ "--register "++apat++" did not match any account")
-                 $ filter (regexMatches apat . T.unpack) $ journalAccountNames j
+          acct = fromMaybe (error' $ "--register "++apat++" did not match any account")  -- PARTIAL:
+                 . firstMatch $ journalAccountNamesDeclaredOrImplied j
+          firstMatch = case toRegexCI $ T.pack apat of
+              Right re -> find (regexMatchText re)
+              Left  _  -> const Nothing
           -- Initialising the accounts screen is awkward, requiring
           -- another temporary UIState value..
           ascr' = aScreen $
                   asInit d True
                     UIState{
-                      aopts=uopts'
+                     astartupopts=uopts'
+                    ,aopts=uopts'
                     ,ajournal=j
                     ,aScreen=asSetSelectedAccount acct accountsScreen
                     ,aPrevScreens=[]
@@ -146,7 +155,8 @@ runBrickUi uopts@UIOpts{cliopts_=copts@CliOpts{inputopts_=_iopts,reportopts_=rop
       (sInit scr) d True $
         (if change_ uopts' then toggleHistorical else id) -- XXX
           UIState{
-            aopts=uopts'
+           astartupopts=uopts'
+          ,aopts=uopts'
           ,ajournal=j
           ,aScreen=scr
           ,aPrevScreens=prevscrs
@@ -163,10 +173,10 @@ runBrickUi uopts@UIOpts{cliopts_=copts@CliOpts{inputopts_=_iopts,reportopts_=rop
       }
 
   -- print (length (show ui)) >> exitSuccess  -- show any debug output to this point & quit
-  
+
   if not (watch_ uopts')
   then
-    void $ defaultMain brickapp ui
+    void $ Brick.defaultMain brickapp ui
 
   else do
     -- a channel for sending misc. events to the app
@@ -199,7 +209,7 @@ runBrickUi uopts@UIOpts{cliopts_=copts@CliOpts{inputopts_=_iopts,reportopts_=rop
       withManager $ \mgr -> do
         dbg1IO "fsnotify using polling ?" $ isPollingManager mgr
         files <- mapM (canonicalizePath . fst) $ jfiles j
-        let directories = nub $ sort $ map takeDirectory files
+        let directories = nubSort $ map takeDirectory files
         dbg1IO "files" files
         dbg1IO "directories to watch" directories
 
@@ -208,12 +218,7 @@ runBrickUi uopts@UIOpts{cliopts_=copts@CliOpts{inputopts_=_iopts,reportopts_=rop
           d
           -- predicate: ignore changes not involving our files
           (\fev -> case fev of
-#if MIN_VERSION_fsnotify(0,3,0)
-            Modified f _ False
-#else
-            Modified f _
-#endif
-                               -> f `elem` files
+            Modified f _ False -> f `elem` files
             -- Added    f _ -> f `elem` files
             -- Removed  f _ -> f `elem` files
             -- we don't handle adding/removing journal files right now
@@ -229,14 +234,6 @@ runBrickUi uopts@UIOpts{cliopts_=copts@CliOpts{inputopts_=_iopts,reportopts_=rop
             )
 
         -- and start the app. Must be inside the withManager block
-#if MIN_VERSION_vty(5,15,0)
         let mkvty = mkVty mempty
-#else
-        let mkvty = mkVty def
-#endif
-#if MIN_VERSION_brick(0,47,0)
         vty0 <- mkvty
         void $ customMain vty0 mkvty (Just eventChan) brickapp ui
-#else
-        void $ customMain mkvty (Just eventChan) brickapp ui
-#endif

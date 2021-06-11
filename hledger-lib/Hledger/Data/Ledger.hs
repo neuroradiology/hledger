@@ -17,7 +17,6 @@ module Hledger.Data.Ledger (
   ,ledgerRootAccount
   ,ledgerTopAccounts
   ,ledgerLeafAccounts
-  ,ledgerAccountsMatching
   ,ledgerPostings
   ,ledgerDateSpan
   ,ledgerCommodities
@@ -26,16 +25,13 @@ module Hledger.Data.Ledger (
 where
 
 import qualified Data.Map as M
--- import Data.Text (Text)
-import qualified Data.Text as T
 import Safe (headDef)
 import Text.Printf
 
-import Hledger.Utils.Test 
+import Hledger.Utils.Test
 import Hledger.Data.Types
 import Hledger.Data.Account
 import Hledger.Data.Journal
-import Hledger.Data.Posting
 import Hledger.Query
 
 
@@ -89,10 +85,6 @@ ledgerTopAccounts = asubs . head . laccounts
 ledgerLeafAccounts :: Ledger -> [Account]
 ledgerLeafAccounts = filter (null.asubs) . laccounts
 
--- | Accounts in ledger whose name matches the pattern, in tree order.
-ledgerAccountsMatching :: [String] -> Ledger -> [Account]
-ledgerAccountsMatching pats = filter (matchpats pats . T.unpack . aname) . laccounts -- XXX pack
-
 -- | List a ledger's postings, in the order parsed.
 ledgerPostings :: Ledger -> [Posting]
 ledgerPostings = journalPostings . ljournal
@@ -100,7 +92,7 @@ ledgerPostings = journalPostings . ljournal
 -- | The (fully specified) date span containing all the ledger's (filtered) transactions,
 -- or DateSpan Nothing Nothing if there are none.
 ledgerDateSpan :: Ledger -> DateSpan
-ledgerDateSpan = postingsDateSpan . ledgerPostings
+ledgerDateSpan = journalDateSpanBothDates . ljournal
 
 -- | All commodities used in this ledger.
 ledgerCommodities :: Ledger -> [CommoditySymbol]
@@ -109,12 +101,9 @@ ledgerCommodities = M.keys . jinferredcommodities . ljournal
 -- tests
 
 tests_Ledger =
-  tests
-    "Ledger"
-    [ tests
-        "ledgerFromJournal"
-        [ length (ledgerPostings $ ledgerFromJournal Any nulljournal) `is` 0
-        , length (ledgerPostings $ ledgerFromJournal Any samplejournal) `is` 13
-        , length (ledgerPostings $ ledgerFromJournal (Depth 2) samplejournal) `is` 7
-        ]
-    ]
+  tests "Ledger" [
+    test "ledgerFromJournal" $ do
+        length (ledgerPostings $ ledgerFromJournal Any nulljournal) @?= 0
+        length (ledgerPostings $ ledgerFromJournal Any samplejournal) @?= 13
+        length (ledgerPostings $ ledgerFromJournal (Depth 2) samplejournal) @?= 7
+  ]

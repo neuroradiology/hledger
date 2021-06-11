@@ -1,0 +1,182 @@
+# * balance report sorting.      -*- eval:(outshine-mode 1); outline-regexp:"# \\*"; -*-
+
+# ** Default sort, without account declarations
+
+<
+2018/1/1
+  (b:j)  1
+
+2018/1/1
+  (c)    1
+
+2018/1/1
+  (b:i)  1
+
+2018/1/1
+  (a:k)  1
+
+# In tree mode, rows are sorted alphabetically by account name, at each tree level. 
+# Missing parent accounts are added (b).
+$ hledger -f- bal -N --tree
+                   1  a:k
+                   2  b
+                   1    i
+                   1    j
+                   1  c
+
+# In flat mode, unused parent accounts are not added (b).
+$ hledger -f- bal -N --flat
+                   1  a:k
+                   1  b:i
+                   1  b:j
+                   1  c
+
+# ** Default sort, with account declarations
+
+<
+account b:k
+account b:j
+account d
+
+2018/1/1
+  (a:l)  1
+
+2018/1/1
+  (b:i)  1
+
+2018/1/1
+  (b:j)  1
+
+2018/1/1
+  (b:k)  1
+
+2018/1/1
+  (c)    1
+
+2018/1/1
+  (d)    1
+
+# With account directives, in tree mode, at each tree level
+# declared accounts are sorted first in declaration order, 
+# followed by undeclared accounts sorted alphabetically.
+# Missing parent accounts are added (b).
+# The b:k, b:j declarations affect the subs of b, not b itself.
+$ hledger -f- bal -N --tree
+                   1  d
+                   1  a:l
+                   3  b
+                   1    k
+                   1    j
+                   1    i
+                   1  c
+
+# In flat mode, unused parent accounts are not added (b).
+$ hledger -f- bal -N --flat
+                   1  d
+                   1  a:l
+                   1  b:k
+                   1  b:j
+                   1  b:i
+                   1  c
+
+# ** Sort by amount
+
+# In flat mode with -S, largest (most-positive) amounts are shown first:
+<
+2018/1/1
+  (b:j)  2
+
+2018/1/1
+  (c)    1
+
+2018/1/1
+  (b:i)  1
+
+2018/1/1
+    (a:k)                                          1
+
+$ hledger -f- bal -N -S --flat
+                   2  b:j
+                   1  a:k
+                   1  b:i
+                   1  c
+
+# In tree mode with -S, rows are sorted by largest amount, and then by account name, at each tree level.
+$ hledger -f- bal -N -S --tree
+                   3  b
+                   2    j
+                   1    i
+                   1  a:k
+                   1  c
+
+# In hledger 1.4-1.10, when the larger amount was composed of differently-priced amounts,
+# it could get sorted as if smaller. Should work now:
+<
+2018/1/1
+  (a)  2X @ 1Y
+  (a)  2X @ 2Y
+
+2018/1/1
+  (b)  3X
+
+$ hledger -f- bal -N -S
+                  4X  a
+                  3X  b
+
+# #1279 in hledger 1.11-1.18, bal -S did not respect the hierarchy. Should work now:
+<
+2020-01-01
+    (a:aa)                                         1
+    (a:ab)                                         3
+    (b)                                            2
+
+$ hledger -f- bal -N -S --tree
+                   4  a
+                   3    ab
+                   1    aa
+                   2  b
+
+# #1287 bal -S -H did not sort by amount, should work now:
+$ hledger -f- bal -N -S -H --flat
+                   3  a:ab
+                   2  b
+                   1  a:aa
+
+# #1287 and bal -S --cumulative:
+$ hledger -f- bal -N -S --cumulative --flat
+                   3  a:ab
+                   2  b
+                   1  a:aa
+
+# #1283 most-negative amounts are sorted last, so eg largest revenues/liabilities are last:
+<
+2020-01-01
+  (revenues:a)  -1
+  (revenues:b)  -3
+  (revenues:c)  -2
+
+$ hledger -f- bal -N -S
+                  -1  revenues:a
+                  -2  revenues:c
+                  -3  revenues:b
+
+# This can be worked around by using --invert (sorting happens after sign-flipping):
+$ hledger -f- bal -N -S --invert
+                   3  revenues:b
+                   2  revenues:c
+                   1  revenues:a
+
+# Or a sign-flipping command like incomestatement:
+$ hledger -f- is -N -S
+Income Statement 2020-01-01
+
+            || 2020-01-01 
+============++============
+ Revenues   ||            
+------------++------------
+ revenues:b ||          3 
+ revenues:c ||          2 
+ revenues:a ||          1 
+============++============
+ Expenses   ||            
+------------++------------

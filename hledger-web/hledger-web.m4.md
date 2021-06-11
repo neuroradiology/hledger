@@ -1,26 +1,26 @@
-% hledger-web(1) hledger-web _version_
+% hledger-web(1)
 % _author_
 % _monthyear_
 
-_web_({{
-_docversionlinks_({{hledger-web}})
-_toc_
-}})
-
 _man_({{
 # NAME
+}})
 
-hledger-web - web interface for the hledger accounting tool
+hledger-web is a web interface (WUI) for the hledger accounting tool.
+This manual is for hledger-web _version_.
 
+_man_({{
 # SYNOPSIS
+}})
 
 `hledger-web [OPTIONS]`\
 `hledger web -- [OPTIONS]`
 
+_man_({{
 # DESCRIPTION
+}})
 
 _hledgerdescription_
-}})
 
 _web_({{
 <style>
@@ -28,10 +28,10 @@ _web_({{
 .highslide-caption {color:white; background-color:black;}
 </style>
 <div style="float:right; max-width:200px; text-align:right;">
-<a href="images/hledger-web/normal/register.png" class="highslide" onclick="return hs.expand(this)"><img src="images/hledger-web/normal/register.png" title="Account register view with accounts sidebar" /></a>
-<a href="images/hledger-web/normal/journal.png" class="highslide" onclick="return hs.expand(this)"><img src="images/hledger-web/normal/journal.png" title="Journal view" /></a>
-<a href="images/hledger-web/normal/help.png" class="highslide" onclick="return hs.expand(this)"><img src="images/hledger-web/normal/help.png" title="Help dialog" /></a>
-<a href="images/hledger-web/normal/add.png" class="highslide" onclick="return hs.expand(this)"><img src="images/hledger-web/normal/add.png" title="Add form" /></a>
+<a href="/images/hledger-web/normal/register.png" class="highslide" onclick="return hs.expand(this)"><img src="/images/hledger-web/normal/register.png" title="Account register view with accounts sidebar" /></a>
+<a href="/images/hledger-web/normal/journal.png" class="highslide" onclick="return hs.expand(this)"><img src="/images/hledger-web/normal/journal.png" title="Journal view" /></a>
+<a href="/images/hledger-web/normal/help.png" class="highslide" onclick="return hs.expand(this)"><img src="/images/hledger-web/normal/help.png" title="Help dialog" /></a>
+<a href="/images/hledger-web/normal/add.png" class="highslide" onclick="return hs.expand(this)"><img src="/images/hledger-web/normal/add.png" title="Add form" /></a>
 </div>
 }})
 
@@ -50,25 +50,32 @@ when running an unprotected instance, it writes a numbered backup of
 the main journal file (only ?) on every edit.
 
 Like hledger, it reads _files_
-For more about this see hledger(1), hledger_journal(5) etc.
+For more about this see hledger(1).
 
 # OPTIONS
 
 Command-line options and arguments may be used to set an initial
-filter on the data. These filter options are not shown in the web UI, 
+filter on the data. These filter options are not shown in the web UI,
 but it will be applied in addition to any search query entered there.
 
-Note: if invoking hledger-web as a hledger subcommand, write `--` before options, 
+Note: if invoking hledger-web as a hledger subcommand, write `--` before options,
 as shown in the synopsis above.
 
 `--serve`
 : serve and log requests, don't browse or auto-exit
+
+`--serve-api`
+: like --serve, but serve only the JSON web API, without the server-side web UI
 
 `--host=IPADDR`
 : listen on this IP address (default: 127.0.0.1)
 
 `--port=PORT`
 : listen on this TCP port (default: 5000)
+
+`--socket=SOCKETFILE`
+: use a unix domain socket file to listen for requests instead of a TCP socket. Implies
+`--serve`. It can only be used if the operating system can provide this type of socket.
 
 `--base-url=URL`
 : set the base url (default: http://IPADDR:PORT).
@@ -84,6 +91,9 @@ serve them from another server for efficiency, you would set the url with this.
 
 `--capabilities-header=HTTPHEADER`
 : read capabilities to enable from a HTTP header, like X-Sandstorm-Permissions (default: disabled)
+
+`--test`
+: run hledger-web's tests and exit. hspec test runner args may follow a --, eg: hledger-web --test -- --help
 
 hledger input options:
 
@@ -108,12 +118,28 @@ browser window, and will exit after two minutes of inactivity (no
 requests and no browser windows viewing it).
 With `--serve`, it just runs the web app without exiting, and logs
 requests to the console.
+With `--serve-api`, only the JSON web api (see below) is served,
+with the usual HTML server-side web UI disabled.
 
 By default the server listens on IP address 127.0.0.1, accessible only to local requests.
 You can use `--host` to change this, eg `--host 0.0.0.0` to listen on all configured addresses.
 
 Similarly, use `--port` to set a TCP port other than 5000, eg if you are
 running multiple hledger-web instances.
+
+Both of these options are ignored when `--socket` is used. In this case, it
+creates an `AF_UNIX` socket file at the supplied path and uses that for communication.
+This is an alternative way of running multiple hledger-web instances behind
+a reverse proxy that handles authentication for different users.
+The path can be derived in a predictable way, eg by using the username within the path.
+As an example, `nginx` as reverse proxy can use the variable `$remote_user` to
+derive a path from the username used in a [HTTP basic authentication](https://docs.nginx.com/nginx/admin-guide/security-controls/configuring-http-basic-authentication/).
+The following `proxy_pass` directive allows access to all `hledger-web`
+instances that created a socket in `/tmp/hledger/`:
+
+```
+  proxy_pass http://unix:/tmp/hledger/${remote_user}.socket;
+```
 
 You can use `--base-url` to change the protocol, hostname, port and path that appear in hyperlinks,
 useful eg for integrating hledger-web within a larger website.
@@ -125,27 +151,27 @@ eg for better caching or cookie-less serving on high performance websites.
 
 # PERMISSIONS
 
-By default, hledger-web allows anyone who can reach it to view the journal 
+By default, hledger-web allows anyone who can reach it to view the journal
 and to add new transactions, but not to change existing data.
 
 You can restrict who can reach it by
 
-- setting the IP address it listens on (see `--host` above). 
-  By default it listens on 127.0.0.1, accessible to all users on the local machine. 
+- setting the IP address it listens on (see `--host` above).
+  By default it listens on 127.0.0.1, accessible to all users on the local machine.
 - putting it behind an authenticating proxy, using eg apache or nginx
 - custom firewall rules
 
 You can restrict what the users who reach it can do, by
 
-- using the `--capabilities=CAP[,CAP..]` flag when you start it, 
+- using the `--capabilities=CAP[,CAP..]` flag when you start it,
   enabling one or more of the following capabilities. The default value is `view,add`:
   - `view`   - allows viewing the journal file and all included files
-  - `add`    - allows adding new transactions to the main journal file 
-  - `manage` - allows editing, uploading or downloading the main or included files 
+  - `add`    - allows adding new transactions to the main journal file
+  - `manage` - allows editing, uploading or downloading the main or included files
 
 - using the `--capabilities-header=HTTPHEADER` flag to specify a HTTP header
   from which it will read capabilities to enable. hledger-web on Sandstorm
-  uses the X-Sandstorm-Permissions header to integrate with Sandstorm's permissions. 
+  uses the X-Sandstorm-Permissions header to integrate with Sandstorm's permissions.
   This is disabled by default.
 
 # EDITING, UPLOADING, DOWNLOADING
@@ -153,10 +179,10 @@ You can restrict what the users who reach it can do, by
 If you enable the `manage` capability mentioned above,
 you'll see a new "spanner" button to the right of the search form.
 Clicking this will let you edit, upload, or download the journal
-file or any files it includes. 
+file or any files it includes.
 
 Note, unlike any other hledger command, in this mode you (or any visitor)
-can alter or wipe the data files. 
+can alter or wipe the data files.
 
 Normally whenever a file is changed in this way, hledger-web saves a numbered backup
 (assuming file permissions allow it, the disk is not full, etc.)
@@ -164,7 +190,7 @@ hledger-web is not aware of version control systems, currently; if you use one,
 you'll have to arrange to commit the changes yourself (eg with a cron job
 or a file watcher like entr).
 
-Changes which would leave the journal file(s) unparseable or non-valid 
+Changes which would leave the journal file(s) unparseable or non-valid
 (eg with failing balance assertions) are prevented.
 (Probably. This needs re-testing.)
 
@@ -172,49 +198,210 @@ Changes which would leave the journal file(s) unparseable or non-valid
 
 hledger-web detects changes made to the files by other means (eg if you edit
 it directly, outside of hledger-web), and it will show the new data
-when you reload the page or navigate to a new page. 
+when you reload the page or navigate to a new page.
 If a change makes a file unparseable,
 hledger-web will display an error message until the file has been fixed.
 
+(Note: if you are viewing files mounted from another machine, make
+sure that both machine clocks are roughly in step.)
+
 # JSON API
 
-In addition to the web UI, hledger-web provides some API routes that
-serve JSON in response to GET requests. Currently these are same ones
-provided by the hledger-api tool, but hledger-web will likely receive
-more attention than hledger-api in future:
+In addition to the web UI, hledger-web also serves a JSON API that can be 
+used to get data or add new transactions.
+If you want the JSON API only, you can use the `--serve-api` flag. Eg:
+
+```shell
+$ hledger-web -f examples/sample.journal --serve-api
+...
 ```
+
+You can get JSON data from these routes:
+
+```
+/version
 /accountnames
 /transactions
 /prices
 /commodities
 /accounts
-/accounttransactions/#AccountName
+/accounttransactions/ACCOUNTNAME
 ```
 
-Also, you can append a new transaction to the journal by sending a PUT request to `/add` (hledger-web only).
-As with the web UI's add form, hledger-web must be started with the `add` capability for this (enabled by default).
+Eg, all account names in the journal (similar to the [accounts](hledger.html#accounts) command).
+(hledger-web's JSON does not include newlines, here we use python to prettify it):
 
-The payload should be a valid hledger transaction as JSON, similar to what you get from `/transactions` or `/accounttransactions`.
-
-Another way to generate test data is with the `readJsonFile`/`writeJsonFile` helpers in Hledger.Web.Json,
-which read or write any of hledger's [JSON-capable types](https://github.com/simonmichael/hledger/blob/master/hledger-web/Hledger/Web/Json.hs#L45)
-from or to a file.
-Eg here we write the first transaction of a sample journal:
 ```shell
-$ make ghci-web
->>> :m +*Hledger.Web.Json
+$ curl -s http://127.0.0.1:5000/accountnames | python -m json.tool
+[
+    "assets",
+    "assets:bank",
+    "assets:bank:checking",
+    "assets:bank:saving",
+    "assets:cash",
+    "expenses",
+    "expenses:food",
+    "expenses:supplies",
+    "income",
+    "income:gifts",
+    "income:salary",
+    "liabilities",
+    "liabilities:debts"
+]
+```
+
+Or all transactions:
+
+```shell
+$ curl -s http://127.0.0.1:5000/transactions | python -m json.tool
+[
+    {
+        "tcode": "",
+        "tcomment": "",
+        "tdate": "2008-01-01",
+        "tdate2": null,
+        "tdescription": "income",
+        "tindex": 1,
+        "tpostings": [
+            {
+                "paccount": "assets:bank:checking",
+                "pamount": [
+                    {
+                        "acommodity": "$",
+                        "aismultiplier": false,
+                        "aprice": null,
+...
+```
+
+Most of the JSON corresponds to hledger's data types; for details of what the fields mean, see the
+[Hledger.Data.Json haddock docs](http://hackage.haskell.org/package/hledger-lib-1.17.1/docs/Hledger-Data-Json.html)
+and click on the various data types, eg 
+[Transaction](http://hackage.haskell.org/package/hledger-lib-1.17.1/docs/Hledger-Data-Types.html#t:Transaction).
+And for a higher level understanding, see the [journal manual](hledger.html).
+
+In some cases there is outer JSON corresponding to a "Report" type.
+To understand that, go to the
+[Hledger.Web.Handler.MiscR haddock](http://hackage.haskell.org/package/hledger-web-1.17.1/docs/Hledger-Web-Handler-MiscR.html)
+and look at the source for the appropriate handler to see what it returns.
+Eg for `/accounttransactions` it's
+[getAccounttransactionsR](http://hackage.haskell.org/package/hledger-web-1.17.1/docs/src/Hledger.Web.Handler.MiscR.html#getAccounttransactionsR),
+returning a "`accountTransactionsReport ...`".
+[Looking up](https://hoogle.haskell.org/?hoogle=accountTransactionsReport) the haddock for that
+we can see that /accounttransactions returns an 
+[AccountTransactionsReport](https://hackage.haskell.org/package/hledger-lib-1.17.1/docs/Hledger-Reports-AccountTransactionsReport.html#t:AccountTransactionsReport),
+which consists of a report title and a list of AccountTransactionsReportItem (etc).
+
+You can add a new transaction to the journal with a PUT request to `/add`,
+if hledger-web was started with the `add` capability (enabled by default).
+The payload must be the full, exact JSON representation of a hledger transaction
+(partial data won't do).
+You can get sample JSON from hledger-web's `/transactions` or `/accounttransactions`,
+or you can export it with hledger-lib, eg like so:
+
+```shell
+.../hledger$ stack ghci hledger-lib
 >>> writeJsonFile "txn.json" (head $ jtxns samplejournal)
 >>> :q
-$ python -m json.tool <txn.json >txn.pretty.json  # optional: make human-readable
 ```
-([sample output & discussion](https://github.com/simonmichael/hledger/issues/316#issuecomment-465858507))
 
-And here's how to test adding that with curl:
+Here's how it looks as of hledger-1.17
+(remember, this JSON corresponds to hledger's 
+[Transaction](http://hackage.haskell.org/package/hledger-lib-1.17.1/docs/Hledger-Data-Types.html#t:Transaction)
+and related data types):
+
+```json
+{
+    "tcomment": "",
+    "tpostings": [
+        {
+            "pbalanceassertion": null,
+            "pstatus": "Unmarked",
+            "pamount": [
+                {
+                    "aprice": null,
+                    "acommodity": "$",
+                    "aquantity": {
+                        "floatingPoint": 1,
+                        "decimalPlaces": 10,
+                        "decimalMantissa": 10000000000
+                    },
+                    "aismultiplier": false,
+                    "astyle": {
+                        "ascommodityside": "L",
+                        "asdigitgroups": null,
+                        "ascommodityspaced": false,
+                        "asprecision": 2,
+                        "asdecimalpoint": "."
+                    }
+                }
+            ],
+            "ptransaction_": "1",
+            "paccount": "assets:bank:checking",
+            "pdate": null,
+            "ptype": "RegularPosting",
+            "pcomment": "",
+            "pdate2": null,
+            "ptags": [],
+            "poriginal": null
+        },
+        {
+            "pbalanceassertion": null,
+            "pstatus": "Unmarked",
+            "pamount": [
+                {
+                    "aprice": null,
+                    "acommodity": "$",
+                    "aquantity": {
+                        "floatingPoint": -1,
+                        "decimalPlaces": 10,
+                        "decimalMantissa": -10000000000
+                    },
+                    "aismultiplier": false,
+                    "astyle": {
+                        "ascommodityside": "L",
+                        "asdigitgroups": null,
+                        "ascommodityspaced": false,
+                        "asprecision": 2,
+                        "asdecimalpoint": "."
+                    }
+                }
+            ],
+            "ptransaction_": "1",
+            "paccount": "income:salary",
+            "pdate": null,
+            "ptype": "RegularPosting",
+            "pcomment": "",
+            "pdate2": null,
+            "ptags": [],
+            "poriginal": null
+        }
+    ],
+    "ttags": [],
+    "tsourcepos": {
+        "tag": "JournalSourcePos",
+        "contents": [
+            "",
+            [
+                1,
+                1
+            ]
+        ]
+    },
+    "tdate": "2008-01-01",
+    "tcode": "",
+    "tindex": 1,
+    "tprecedingcomment": "",
+    "tdate2": null,
+    "tdescription": "income",
+    "tstatus": "Unmarked"
+}
+```
+
+And here's how to test adding it with curl. This should add a new entry to your journal:
+
 ```shell
-$ curl -s http://127.0.0.1:5000/add -X PUT -H 'Content-Type: application/json' --data-binary @txn.pretty.json; echo
+$ curl http://127.0.0.1:5000/add -X PUT -H 'Content-Type: application/json' --data-binary @txn.json
 ```
-
-_man_({{
 
 # ENVIRONMENT
 
@@ -235,5 +422,3 @@ Query arguments and some hledger options are ignored.
 Does not work in text-mode browsers.
 
 Does not work well on small screens.
-
-}})

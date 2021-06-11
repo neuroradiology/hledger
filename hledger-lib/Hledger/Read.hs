@@ -1,13 +1,21 @@
+--- * -*- outline-regexp:"--- \\*"; -*-
+--- ** doc
+-- In Emacs, use TAB on lines beginning with "-- *" to collapse/expand sections.
 {-|
 
 This is the entry point to hledger's reading system, which can read
 Journals from various data formats. Use this module if you want to parse
 journal data or read journal files. Generally it should not be necessary
 to import modules below this one.
+
 -}
 
-{-# LANGUAGE ScopedTypeVariables, OverloadedStrings #-}
+--- ** language
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE PackageImports      #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
+--- ** exports
 module Hledger.Read (
 
   -- * Journal files
@@ -18,7 +26,6 @@ module Hledger.Read (
   readJournalFile,
   requireJournalFileExists,
   ensureJournalFileExists,
-  splitReaderPrefix,
 
   -- * Journal parsing
   readJournal,
@@ -26,6 +33,8 @@ module Hledger.Read (
 
   -- * Re-exported
   JournalReader.postingp,
+  findReader,
+  splitReaderPrefix,
   module Hledger.Read.Common,
 
   -- * Tests
@@ -33,60 +42,80 @@ module Hledger.Read (
 
 ) where
 
+--- ** imports
 import Control.Arrow (right)
 import qualified Control.Exception as C
-import Control.Monad.Except
-import Data.Default
-import Data.List
-import Data.Maybe
-import Data.Ord
+import Control.Monad (when)
+import "mtl" Control.Monad.Except (runExceptT)
+import Data.Default (def)
+import Data.Foldable (asum)
+import Data.List (group, sort, sortBy)
+import Data.List.NonEmpty (nonEmpty)
+import Data.Maybe (fromMaybe)
+import Data.Ord (comparing)
+import Data.Semigroup (sconcat)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Data.Time (Day)
-import Safe
+import Safe (headDef)
 import System.Directory (doesFileExist, getHomeDirectory)
 import System.Environment (getEnv)
 import System.Exit (exitFailure)
-import System.FilePath
-import System.IO
-import Text.Printf
+import System.FilePath ((<.>), (</>), splitDirectories, splitFileName)
+import System.Info (os)
+import System.IO (hPutStr, stderr)
 
-import Hledger.Data.Dates (getCurrentDay, parsedate, showDate)
+import Hledger.Data.Dates (getCurrentDay, parsedateM, showDate)
 import Hledger.Data.Types
 import Hledger.Read.Common
-import Hledger.Read.JournalReader   as JournalReader
--- import qualified Hledger.Read.LedgerReader    as LedgerReader
-import qualified Hledger.Read.TimedotReader   as TimedotReader
-import qualified Hledger.Read.TimeclockReader as TimeclockReader
-import Hledger.Read.CsvReader as CsvReader
+import Hledger.Read.JournalReader as JournalReader
+import Hledger.Read.CsvReader (tests_CsvReader)
+-- import Hledger.Read.TimedotReader (tests_TimedotReader)
+-- import Hledger.Read.TimeclockReader (tests_TimeclockReader)
 import Hledger.Utils
 import Prelude hiding (getContents, writeFile)
 
+--- ** doctest setup
+-- $setup
+-- >>> :set -XOverloadedStrings
+
+--- ** journal reading
 
 journalEnvVar           = "LEDGER_FILE"
 journalEnvVar2          = "LEDGER"
 journalDefaultFilename  = ".hledger.journal"
 
--- The available journal readers, each one handling a particular data format.
-readers :: [Reader]
-readers = [
-  JournalReader.reader
- ,TimeclockReader.reader
- ,TimedotReader.reader
- ,CsvReader.reader
---  ,LedgerReader.reader
- ]
+-- | Read a Journal from the given text, assuming journal format; or
+-- throw an error.
+readJournal' :: Text -> IO Journal
+readJournal' t = readJournal def Nothing t >>= either error' return  -- PARTIAL:
 
-readerNames :: [String]
-readerNames = map rFormat readers
-
--- | A file path optionally prefixed by a reader name and colon
--- (journal:, csv:, timedot:, etc.).
-type PrefixedFilePath = FilePath
+-- | @readJournal iopts mfile txt@
+--
+-- Read a Journal from some text, or return an error message.
+--
+-- The reader (data format) is chosen based on, in this order:
+--
+-- - a reader name provided in @iopts@
+--
+-- - a reader prefix in the @mfile@ path
+--
+-- - a file extension in @mfile@
+--
+-- If none of these is available, or if the reader name is unrecognised,
+-- we use the journal reader. (We used to try all readers in this case;
+-- since hledger 1.17, we prefer predictability.)
+readJournal :: InputOpts -> Maybe FilePath -> Text -> IO (Either String Journal)
+readJournal iopts mpath txt = do
+  let r :: Reader IO =
+        fromMaybe JournalReader.reader $ findReader (mformat_ iopts) mpath
+  dbg6IO "trying reader" (rFormat r)
+  (runExceptT . (rReadFn r) iopts (fromMaybe "(string)" mpath)) txt
 
 -- | Read the default journal file specified by the environment, or raise an error.
 defaultJournal :: IO Journal
-defaultJournal = defaultJournalPath >>= readJournalFile def >>= either error' return
+defaultJournal = defaultJournalPath >>= readJournalFile def >>= either error' return  -- PARTIAL:
 
 -- | Get the default journal file path specified by the environment.
 -- Like ledger, we look first for the LEDGER_FILE environment
@@ -108,60 +137,9 @@ defaultJournalPath = do
                   home <- getHomeDirectory `C.catch` (\(_::C.IOException) -> return "")
                   return $ home </> journalDefaultFilename
 
--- | If a filepath is prefixed by one of the reader names and a colon,
--- split that off. Eg "csv:-" -> (Just "csv", "-").
-splitReaderPrefix :: PrefixedFilePath -> (Maybe String, FilePath)
-splitReaderPrefix f =
-  headDef (Nothing, f)
-  [(Just r, drop (length r + 1) f) | r <- readerNames, (r++":") `isPrefixOf` f]
-
--- | If the specified journal file does not exist (and is not "-"),
--- give a helpful error and quit.
-requireJournalFileExists :: FilePath -> IO ()
-requireJournalFileExists "-" = return ()
-requireJournalFileExists f = do
-  exists <- doesFileExist f
-  when (not exists) $ do  -- XXX might not be a journal file
-    hPrintf stderr "The hledger journal file \"%s\" was not found.\n" f
-    hPrintf stderr "Please create it first, eg with \"hledger add\" or a text editor.\n"
-    hPrintf stderr "Or, specify an existing journal file with -f or LEDGER_FILE.\n"
-    exitFailure
-
--- | Ensure there is a journal file at the given path, creating an empty one if needed.
-ensureJournalFileExists :: FilePath -> IO ()
-ensureJournalFileExists f = do
-  exists <- doesFileExist f
-  when (not exists) $ do
-    hPrintf stderr "Creating hledger journal file %s.\n" f
-    -- note Hledger.Utils.UTF8.* do no line ending conversion on windows,
-    -- we currently require unix line endings on all platforms.
-    newJournalContent >>= writeFile f
-
--- | Give the content for a new auto-created journal file.
-newJournalContent :: IO String
-newJournalContent = do
-  d <- getCurrentDay
-  return $ printf "; journal created %s by hledger\n" (show d)
-
--- | Read a Journal from the given text trying all readers in turn, or throw an error.
-readJournal' :: Text -> IO Journal
-readJournal' t = readJournal def Nothing t >>= either error' return
-
--- | @findReader mformat mpath@
---
--- Find the reader named by @mformat@, if provided.
--- Or, if a file path is provided, find the first reader that handles
--- its file extension, if any.
-findReader :: Maybe StorageFormat -> Maybe FilePath -> Maybe Reader
-findReader Nothing Nothing     = Nothing
-findReader (Just fmt) _        = headMay [r | r <- readers, rFormat r == fmt]
-findReader Nothing (Just path) =
-  case prefix of
-    Just fmt -> headMay [r | r <- readers, rFormat r == fmt]
-    Nothing  -> headMay [r | r <- readers, ext `elem` rExtensions r]
-  where
-    (prefix,path') = splitReaderPrefix path
-    ext            = drop 1 $ takeExtension path'
+-- | A file path optionally prefixed by a reader name and colon
+-- (journal:, csv:, timedot:, etc.).
+type PrefixedFilePath = FilePath
 
 -- | Read a Journal from each specified file path and combine them into one.
 -- Or, return the first error message.
@@ -169,15 +147,11 @@ findReader Nothing (Just path) =
 -- Combining Journals means concatenating them, basically.
 -- The parse state resets at the start of each file, which means that
 -- directives & aliases do not affect subsequent sibling or parent files.
--- They do affect included child files though. 
+-- They do affect included child files though.
 -- Also the final parse state saved in the Journal does span all files.
 readJournalFiles :: InputOpts -> [PrefixedFilePath] -> IO (Either String Journal)
 readJournalFiles iopts =
-  (right mconcat1 . sequence <$>) . mapM (readJournalFile iopts)
-  where
-    mconcat1 :: Monoid t => [t] -> t
-    mconcat1 [] = mempty
-    mconcat1 x  = foldr1 mappend x
+  fmap (right (maybe def sconcat . nonEmpty) . sequence) . mapM (readJournalFile iopts)
 
 -- | Read a Journal from this file, or from stdin if the file path is -,
 -- or return an error message. The file path can have a READER: prefix.
@@ -186,17 +160,18 @@ readJournalFiles iopts =
 -- the @mformat_@ specified in the input options, if any;
 -- the file path's READER: prefix, if any;
 -- a recognised file name extension.
--- if none of these identify a known reader, all built-in readers are tried in turn.
+-- if none of these identify a known reader, the journal reader is used.
 --
 -- The input options can also configure balance assertion checking, automated posting
 -- generation, a rules file for converting CSV data, etc.
 readJournalFile :: InputOpts -> PrefixedFilePath -> IO (Either String Journal)
 readJournalFile iopts prefixedfile = do
-  let 
+  let
     (mfmt, f) = splitReaderPrefix prefixedfile
-    iopts' = iopts{mformat_=firstJust [mfmt, mformat_ iopts]}
+    iopts' = iopts{mformat_=asum [mfmt, mformat_ iopts]}
   requireJournalFileExists f
   t <- readFileOrStdinPortably f
+    -- <- T.readFile f  -- or without line ending translation, for testing
   ej <- readJournal iopts' (Just f) t
   case ej of
     Left e  -> return $ Left e
@@ -206,6 +181,50 @@ readJournalFile iopts prefixedfile = do
       when (new_save_ iopts && not (null newds)) $ saveLatestDates newds f
       return $ Right newj
     Right j -> return $ Right j
+
+--- ** utilities
+
+-- | If the specified journal file does not exist (and is not "-"),
+-- give a helpful error and quit.
+requireJournalFileExists :: FilePath -> IO ()
+requireJournalFileExists "-" = return ()
+requireJournalFileExists f = do
+  exists <- doesFileExist f
+  when (not exists) $ do  -- XXX might not be a journal file
+    hPutStr stderr $ "The hledger journal file \"" <> show f <> "\" was not found.\n"
+    hPutStr stderr "Please create it first, eg with \"hledger add\" or a text editor.\n"
+    hPutStr stderr "Or, specify an existing journal file with -f or LEDGER_FILE.\n"
+    exitFailure
+
+-- | Ensure there is a journal file at the given path, creating an empty one if needed.
+-- On Windows, also ensure that the path contains no trailing dots
+-- which could cause data loss (see 'isWindowsUnsafeDotPath').
+ensureJournalFileExists :: FilePath -> IO ()
+ensureJournalFileExists f = do
+  when (os/="mingw32" && isWindowsUnsafeDotPath f) $ do
+    hPutStr stderr $ "Part of file path \"" <> show f <> "\"\n ends with a dot, which is unsafe on Windows; please use a different path.\n"
+    exitFailure
+  exists <- doesFileExist f
+  when (not exists) $ do
+    hPutStr stderr $ "Creating hledger journal file " <> show f <> ".\n"
+    -- note Hledger.Utils.UTF8.* do no line ending conversion on windows,
+    -- we currently require unix line endings on all platforms.
+    newJournalContent >>= T.writeFile f
+
+-- | Does any part of this path contain non-. characters and end with a . ?
+-- Such paths are not safe to use on Windows (cf #1056).
+isWindowsUnsafeDotPath :: FilePath -> Bool
+isWindowsUnsafeDotPath =
+  not . null .
+  filter (not . all (=='.')) .
+  filter ((=='.').last) .
+  splitDirectories
+
+-- | Give the content for a new auto-created journal file.
+newJournalContent :: IO Text
+newJournalContent = do
+  d <- getCurrentDay
+  return $ "; journal created " <> T.pack (show d) <> " by hledger\n"
 
 -- A "LatestDates" is zero or more copies of the same date,
 -- representing the latest transaction date read from a file,
@@ -220,20 +239,22 @@ latestDates = headDef [] . take 1 . group . reverse . sort
 
 -- | Remember that these transaction dates were the latest seen when
 -- reading this journal file.
-saveLatestDates :: LatestDates -> FilePath -> IO () 
-saveLatestDates dates f = writeFile (latestDatesFileFor f) $ unlines $ map showDate dates
+saveLatestDates :: LatestDates -> FilePath -> IO ()
+saveLatestDates dates f = T.writeFile (latestDatesFileFor f) $ T.unlines $ map showDate dates
 
--- | What were the latest transaction dates seen the last time this 
+-- | What were the latest transaction dates seen the last time this
 -- journal file was read ? If there were multiple transactions on the
 -- latest date, that number of dates is returned, otherwise just one.
--- Or none if no transactions were read, or if latest dates info is not 
+-- Or none if no transactions were read, or if latest dates info is not
 -- available for this file.
 previousLatestDates :: FilePath -> IO LatestDates
 previousLatestDates f = do
   let latestfile = latestDatesFileFor f
+      parsedate s = maybe (fail $ "could not parse date \"" ++ s ++ "\"") return $
+                      parsedateM s
   exists <- doesFileExist latestfile
   if exists
-  then map (parsedate . strip) . lines . strip . T.unpack <$> readFileStrictly latestfile
+  then traverse (parsedate . T.unpack . T.strip) . T.lines =<< readFileStrictly latestfile
   else return []
 
 -- | Where to save latest transaction dates for the given file path.
@@ -262,82 +283,10 @@ journalFilterSinceLatestDates ds@(d:_) j = (j', ds')
     j'                    = j{jtxns=newsamedatets++laterts}
     ds'                   = latestDates $ map tdate $ samedatets++laterts
 
--- | @readJournal iopts mfile txt@
---
--- Read a Journal from some text, or return an error message.
---
--- The reader (data format) is chosen based on a recognised file name extension in @mfile@ (if provided).
--- If it does not identify a known reader, all built-in readers are tried in turn
--- (returning the first one's error message if none of them succeed).
---
--- Input ioptions (@iopts@) specify CSV conversion rules file to help convert CSV data,
--- enable or disable balance assertion checking and automated posting generation.
---
-readJournal :: InputOpts -> Maybe FilePath -> Text -> IO (Either String Journal)
-readJournal iopts mfile txt =
-  tryReaders iopts mfile specifiedorallreaders txt
-  where
-    specifiedorallreaders = maybe stablereaders (:[]) $ findReader (mformat_ iopts) mfile
-    stablereaders = filter (not.rExperimental) readers
-
--- | @tryReaders iopts readers path t@
---
--- Try to parse the given text to a Journal using each reader in turn,
--- returning the first success, or if all of them fail, the first error message.
---    
--- Input ioptions (@iopts@) specify CSV conversion rules file to help convert CSV data,
--- enable or disable balance assertion checking and automated posting generation.
---
-tryReaders :: InputOpts -> Maybe FilePath -> [Reader] -> Text -> IO (Either String Journal)
-tryReaders iopts mpath readers txt = firstSuccessOrFirstError [] readers
-  where
-    firstSuccessOrFirstError :: [String] -> [Reader] -> IO (Either String Journal)
-    firstSuccessOrFirstError [] []        = return $ Left "no readers found"
-    firstSuccessOrFirstError errs (r:rs) = do
-      dbg1IO "trying reader" (rFormat r)
-      result <- (runExceptT . (rParser r) iopts path) txt
-      dbg1IO "reader result" $ either id show result
-      case result of Right j -> return $ Right j                        -- success!
-                     Left e  -> firstSuccessOrFirstError (errs++[e]) rs -- keep trying
-    firstSuccessOrFirstError (e:_) []    = return $ Left e              -- none left, return first error
-    path = fromMaybe "(string)" mpath
-
----
-
-
--- tests
+--- ** tests
 
 tests_Read = tests "Read" [
    tests_Common
   ,tests_CsvReader
   ,tests_JournalReader
   ]
-
---samplejournal = readJournal' $ T.unlines
--- ["2008/01/01 income"
--- ,"    assets:bank:checking  $1"
--- ,"    income:salary"
--- ,""
--- ,"comment"
--- ,"multi line comment here"
--- ,"for testing purposes"
--- ,"end comment"
--- ,""
--- ,"2008/06/01 gift"
--- ,"    assets:bank:checking  $1"
--- ,"    income:gifts"
--- ,""
--- ,"2008/06/02 save"
--- ,"    assets:bank:saving  $1"
--- ,"    assets:bank:checking"
--- ,""
--- ,"2008/06/03 * eat & shop"
--- ,"    expenses:food      $1"
--- ,"    expenses:supplies  $1"
--- ,"    assets:cash"
--- ,""
--- ,"2008/12/31 * pay off"
--- ,"    liabilities:debts  $1"
--- ,"    assets:bank:checking"
--- ]
-

@@ -1,14 +1,16 @@
 balancesheet, bs\
-This command displays a simple balance sheet, showing historical ending
-balances of asset and liability accounts (ignoring any report begin date).
-It assumes that these accounts are under a top-level `asset` or `liability`
-account (case insensitive, plural forms also  allowed).
+This command displays a balance sheet, showing historical ending
+balances of asset and liability accounts. (To see equity as well,
+use the [balancesheetequity](#balancesheetequity) command.)
+Amounts are shown with normal positive sign, as in conventional
+financial statements.
 
-Note this report shows all account balances with normal positive sign
-(like conventional financial statements, unlike balance/print/register)
-(experimental).
+_FLAGS
 
-_FLAGS_
+The asset and liability accounts shown are those accounts declared
+with the `Asset` or `Cash` or `Liability` type, or otherwise all
+accounts under a top-level `asset` or `liability` account (case
+insensitive, plurals allowed).
 
 Example:
 
@@ -33,14 +35,14 @@ Total:
                    0
 ```
 
-With a [reporting interval](#reporting-interval), multiple columns
-will be shown, one for each report period.
-As with [multicolumn balance reports](#multicolumn-balance-reports),
-you can alter the report mode with `--change`/`--cumulative`/`--historical`.
-Normally balancesheet shows historical ending balances, which is what
-you need for a balance sheet; note this means it ignores report begin
-dates (and `-T/--row-total`, since summing end balances generally does not make sense).
+This command is a higher-level variant of the [`balance`](#balance) command,
+and supports many of that command's features, such as multi-period reports.
+It is similar to `hledger balance -H assets liabilities`,
+but with smarter account detection, and liabilities displayed with
+their sign flipped.
 
-This command also supports
-[output destination](/manual.html#output-destination) and
-[output format](/manual.html#output-format) selection.
+This command also supports the
+[output destination](hledger.html#output-destination) and
+[output format](hledger.html#output-format) options
+The output formats supported are
+`txt`, `csv`, `html`, and (experimental) `json`.

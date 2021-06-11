@@ -1,6 +1,6 @@
 m4_dnl m4 macro definitions used in all hledger package docs.
-m4_dnl m4 commands in Shake.hs always load this file first.
-m4_dnl PACKAGE/defs.m4 can add to/override these definitions.
+m4_dnl m4 commands in Shake.hs always load this file first;
+m4_dnl m4 macros in package directories could override these.
 m4_dnl
 m4_dnl "m4_dnl" ignores the rest of the line (including newline).
 m4_dnl
@@ -13,39 +13,15 @@ m4_dnl
 m4_dnl Author to show in man pages.
 m4_define({{_author_}}, {{}})m4_dnl
 m4_dnl
-m4_dnl Macros for conditionally including format-specific content
-m4_dnl $1 is the manual's web slug: hledger, hledger-ui, journal, csv etc.
-m4_define({{_man_}},         m4_ifdef({{MAN}},{{$1}})             )m4_dnl
-m4_define({{_web_}},         m4_ifdef({{WEB}},{{$1}})             )m4_dnl
-m4_define({{_webseparate_}}, m4_ifdef({{WEB && SEPARATE}},{{$1}}) )m4_dnl
-m4_define({{_webcombined_}}, m4_ifdef({{WEB && COMBINED}},{{$1}}) )m4_dnl
-m4_dnl
-m4_dnl Links to dev and recent release versions of a manual.
-m4_dnl The actual links are inserted dynamically by site.js, static generation was much too painful.
-m4_dnl There should be a " (dev)" suffix here except when generating release docs.
-m4_define({{_docversionlinks_}},m4_dnl
-This doc is for version **_version_**
-m4_dnl comment (dev) for releases, uncomment between releases:
-m4_dnl (dev)
-.
-<span class="docversions">m4_dnl
-</span>)m4_dnl
-m4_dnl
-m4_dnl Insert a table of contents marker, which doc build scripts will populate.
-m4_define({{_toc_}},{{
-\$TOC\$
-}})m4_dnl
-m4_dnl
-m4_dnl Helpers for generating table markup.
-m4_dnl _table_({{
-m4_dnl | cell1 | cell2 ...
-m4_dnl | cell1 | cell2 ...
-m4_dnl ...
-m4_dnl }})
-m4_define({{_table2_}}, {{
-|
-|-|-$1}})m4_dnl
-m4_dnl
+m4_dnl Macros for conditionally including or excluding content based on the format
+m4_dnl (man, web or info).
+m4_define({{_man_}},         m4_ifdef({{MAN}},{{$1}})    )m4_dnl
+m4_define({{_notman_}},      m4_ifdef({{MAN}},,{{$1}})   )m4_dnl
+m4_define({{_web_}},         m4_ifdef({{WEB}},{{$1}})    )m4_dnl
+m4_define({{_notweb_}},      m4_ifdef({{WEB}},,{{$1}})   )m4_dnl
+m4_define({{_info_}},        m4_ifdef({{INFO}},{{$1}})   )m4_dnl
+m4_define({{_notinfo_}},     m4_ifdef({{INFO}},,{{$1}})  )m4_dnl
+m4_dnl 
 m4_dnl Two side-by-side columns.
 m4_define({{_col2_}},
 {{<div class="container-fluid">
@@ -79,10 +55,16 @@ m4_dnl Should be kept synced with CliOptions.hs etc.
 m4_define({{_helpoptions_}}, {{
 
 `-h --help`
-: show general usage (or after COMMAND, command usage)
+: show general or COMMAND help
+
+`--man`
+: show general or COMMAND user manual with man
+
+`--info`
+: show general or COMMAND user manual with info
 
 `--version`
-: show version
+: show general or ADDONCMD version
 
 `--debug[=N]`
 : show debug output (levels 1-9, default: 1)
@@ -110,7 +92,10 @@ m4_define({{_inputoptions_}}, {{
 : use some other field or tag for the account name
 
 `-I --ignore-assertions`
-: ignore any failing balance assertions
+: disable balance assertion checks (note: does not disable balance assignments)
+
+`-s --strict`
+: do extra error checking (check that all posted accounts are declared)
 
 }} )m4_dnl
 m4_dnl
@@ -118,9 +103,11 @@ m4_define({{_reportingoptions_}}, {{
 
 `-b --begin=DATE`
 : include postings/txns on or after this date
+  (will be adjusted to preceding subperiod start when using a report interval)
 
 `-e --end=DATE`
 : include postings/txns before this date
+  (will be adjusted to following subperiod end when using a report interval)
 
 `-D --daily`
 : multiperiod/multicolumn report by day
@@ -138,7 +125,7 @@ m4_define({{_reportingoptions_}}, {{
 : multiperiod/multicolumn report by year
 
 `-p --period=PERIODEXP`
-: set start date, end date, and/or reporting interval all at once using [period expressions](manual.html#period-expressions) syntax (overrides the flags above)
+: set start date, end date, and/or reporting interval all at once using [period expressions](#period-expressions) syntax
 
 `--date2`
 : match the secondary date instead (see command help for other effects)
@@ -162,19 +149,33 @@ m4_define({{_reportingoptions_}}, {{
 : show items with zero amount, normally hidden (and vice-versa in hledger-ui/hledger-web)
 
 `-B --cost`
-: convert amounts to their cost at transaction time
-(using the [transaction price](journal.html#transaction-prices), if any)
+: convert amounts to their cost/selling amount at transaction time
 
-`-V --value`
-: convert amounts to their market value on the report end date
-(using the most recent applicable [market price](journal.html#market-prices), if any)
+`-V --market`
+: convert amounts to their market value in default valuation commodities
+
+`-X --exchange=COMM`
+: convert amounts to their market value in commodity COMM
+
+`--value`
+: convert amounts to cost or market value, more flexibly than -B/-V/-X
+
+`--infer-market-prices`
+: use transaction prices (recorded with @ or @@) as additional market prices, as if they were P directives
 
 `--auto`
-: apply [automated posting rules](journal.html#auto-postings-transaction-modifiers) to modify transactions.
+: apply [automated posting rules](hledger.html#auto-postings) to modify transactions.
 
 `--forecast`
-: apply [periodic transaction](journal.html#periodic-transactions) rules to generate future transactions, to 6 months from now or report end date.
+: generate future transactions from [periodic transaction](hledger.html#periodic-transactions) rules, for the next 6 months or till report end date.
+In hledger-ui, also make ordinary future transactions visible.
 
+`--color=WHEN (or --colour=WHEN)`
+: Should color-supporting commands use ANSI color codes in text output.
+: 'auto' (default): whenever stdout seems to be a color-supporting terminal.
+: 'always' or 'yes': always, useful eg when piping output into 'less -R'.
+: 'never' or 'no': never.
+: A NO_COLOR environment variable overrides this.
 
 When a reporting option appears more than once in the command line, the last one takes precedence.
 
@@ -196,7 +197,7 @@ _optionnotes_
 m4_dnl
 m4_dnl A standard description of hledger.
 m4_define({{_hledgerdescription_}}, {{
-hledger is a cross-platform program for tracking money, time, or any other commodity,
+hledger is a reliable, cross-platform set of programs for tracking money, time, or any other commodity,
 using double-entry accounting and a simple, editable file format.
 hledger is inspired by and largely compatible with ledger(1). }} )m4_dnl
 m4_dnl
@@ -211,8 +212,27 @@ m4_define({{_LEDGER_FILE_}}, {{
 **LEDGER_FILE**
 The journal file path when not specified with `-f`.
 Default: `~/.hledger.journal` (on windows, perhaps `C:/Users/USER/.hledger.journal`).
+
+A typical value is `~/DIR/YYYY.journal`, where DIR is a version-controlled finance directory
+and YYYY is the current year. Or `~/DIR/current.journal`, where current.journal is a symbolic
+link to YYYY.journal.
+
+On Mac computers, you can set this and other environment variables in a more thorough way
+that also affects applications started from the GUI (say, an Emacs dock icon).
+Eg on MacOS Catalina I have a `~/.MacOSX/environment.plist` file containing
+```
+{
+  "LEDGER_FILE" : "~/finance/current.journal"
+}
+```
+To see the effect you may need to `killall Dock`, or reboot.
+
+
 }} )m4_dnl
 m4_dnl
-m4_dnl Dummy macro to strip _FLAGS_ marker in command docs.
-m4_define({{_FLAGS_}}, {{}})m4_dnl
+m4_dnl The _FLAGS marker is used in generating command help (see
+m4_dnl CliOptions.parseCommandDoc), but should be removed when generating manuals.
+m4_dnl Just one underscore here, so pandoc doesn't strip them
+m4_dnl ($FLAGS$ and =FLAGS= didn't work, not sure why).
+m4_define({{_FLAGS}}, {{}})m4_dnl
 m4_dnl

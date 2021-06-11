@@ -1,9 +1,153 @@
 User-visible changes in hledger-ui.
 See also the hledger changelog.
 
-# 1ac6c040
+# 1.21 2021-03-10
 
-- support brick >=0.47 also
+- Register screen: also show transactions below the depth limit, as in
+  1.19, keeping the register balance in agreement with the balance
+  shown on the accounts screen. This regressed in 1.20. (#1468)
+
+- Transaction screen: all decimal places are now shown. On the
+  accounts screen and register screen we round amounts according to
+  commodity display styles, but when you drill down to a transaction
+  you probably want to see the unrounded amounts. (Like print, #cf
+  931.)
+
+- New flags `--man` and `--info` open the man page or info manual.
+  (See hledger changelog)
+
+# 1.20.4 2021-01-29
+
+- ui: register: show all txns in/under an account at the depth limit (#1468).
+  In 1.20-1.20.3, the register screen had stopped showing transactions 
+  in accounts below a depth limit. Now it properly shows all subaccount transactions,
+  even when there is a depth limit, ensuring that the register's final total 
+  matches the balance shown on the account screen.
+
+# 1.20.3 2021-01-14
+
+- Use hledger 1.20.3.
+
+# 1.20.2 2020-12-28
+
+- Fix loss of capitalisation in part of the manual. 
+
+- Fix the info manual's node structure.
+
+- Use hledger 1.20.2.
+
+# 1.20.1 2020-12-15
+
+- Fix the F key (toggle future/forecast transactions), which in 1.20 
+  would only work twice. (#1411)
+
+- Fix loss of forecasted transactions when the journal was reloaded
+  while they were hidden. (#1204)
+
+# 1.20 2020-12-05
+
+- When entering a query with `/`, malformed queries/regular expressions
+  no longer cause the program to exit. (Stephen Morgan)
+
+- Eliding of multicommodity amounts now makes better use of available space. (Stephen Morgan)
+
+- `E` now parses the `HLEDGER_UI_EDITOR` or `EDITOR` environment variable
+  correctly on Windows (ignoring the file extension), so if you have that set
+  it should be better at opening your editor at the correct line.
+
+- `E` now supports positioning when `HLEDGER_UI_EDITOR` or `EDITOR` 
+  is VS Code ("`code`") (#1359)
+
+- hledger-ui now has a (human-powered) test suite.
+
+
+# 1.19.1 2020-09-07
+
+- Allow megaparsec 9
+
+# 1.19 2020-09-01
+
+- The --color/--colour=WHEN command line option, support for the
+  NO_COLOR environment variable, and smarter autodetection of colour
+  terminals have been added (#1296)
+
+- -t and -l command line flags have been added as short forms of
+  --tree and --flat (#1286)
+
+- Flat (AKA list) mode is now the default
+
+- t now toggles tree mode, while T sets the "today" period (#1286)
+
+- register: multicommodity amounts containing more than two
+  commodities are now elided
+
+- register: a transaction dated outside the report period now is not
+  shown even if it has postings dated inside the report period.
+
+- ESC now restores exactly the app's state at startup, which includes
+  clearing any report period limit (#1286)
+
+- DEL/BS no longer changes the tree/list mode
+
+- q now exits help before exiting the app (#1286)
+
+- The help dialog's layout is improved
+
+# 1.18.1 2020-06-21
+
+- Fix regression in 'F' (#1255) (Dmitry Astapov)
+
+# 1.18 2020-06-07
+
+- builds with hledger 1.18
+
+# 1.17.1.1 2020-03-19
+
+- update bounds after some belated hledger-* version bumps
+
+# 1.17.1 2020-03-19
+
+- fix a regression, empty register of depth-limited account (fix #1208)
+
+- require newer Decimal, math-functions libs to ensure consistent
+  rounding behaviour, even when built with old GHCs/snapshots. 
+  hledger uses banker's rounding (rounds to nearest even number, eg
+  0.5 displayed with zero decimal places is "0").
+
+# 1.17 2020-03-01
+
+- don't enable --auto by default
+
+- don't enable --forecast by default; drop the --future flag (#1193)
+
+  Previously, periodic transactions occurring today were always shown,
+  in both "present" and "future" modes.
+
+  Now, generation of periodic transactions and display of future
+  transactions (all kinds) are combined as "forecast mode", which can
+  be enabled with --forecast and/or the F key.  The --future flag is
+  now a hidden alias for --forecast, and deprecated.
+
+# 1.16.2 2020-01-14
+
+- add support for megaparsec 8 (#1175)
+
+# 1.16.1 2019-12-03
+
+- use hledger 1.16.1, fixing GHC 8.0/8.2 build
+
+# 1.16 2019-12-01
+
+- add support for GHC 8.8, base-compat 0.11 (#1090)
+
+- drop support for GHC 7.10
+
+- the B and V keys toggle cost or value display (like the -B and -V
+  command line flags)
+
+# 1.15 2019-09-01
+
+- allow brick >=0.47
 
 - use hledger 1.15
 

@@ -7,11 +7,12 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module Hledger.Web.Handler.MiscR
-  ( getAccountnamesR       
-  , getTransactionsR       
-  , getPricesR             
-  , getCommoditiesR        
-  , getAccountsR           
+  ( getVersionR
+  , getAccountnamesR
+  , getTransactionsR
+  , getPricesR
+  , getCommoditiesR
+  , getAccountsR
   , getAccounttransactionsR
   , getDownloadR
   , getFaviconR
@@ -25,15 +26,18 @@ import qualified Data.Text as T
 import Yesod.Default.Handlers (getFaviconR, getRobotsR)
 
 import Hledger
-import Hledger.Web.Json ()
 import Hledger.Web.Import
+import Hledger.Web.WebOptions (version)
 import Hledger.Web.Widget.Common (journalFile404)
 
 getRootR :: Handler Html
-getRootR = redirect JournalR
+getRootR = do
+  checkServerSideUiEnabled
+  redirect JournalR
 
 getManageR :: Handler Html
 getManageR = do
+  checkServerSideUiEnabled
   VD{caps, j} <- getViewData
   when (CapManage `notElem` caps) (permissionDenied "Missing the 'manage' capability")
   defaultLayout $ do
@@ -42,13 +46,21 @@ getManageR = do
 
 getDownloadR :: FilePath -> Handler TypedContent
 getDownloadR f = do
+  checkServerSideUiEnabled
   VD{caps, j} <- getViewData
   when (CapManage `notElem` caps) (permissionDenied "Missing the 'manage' capability")
   (f', txt) <- journalFile404 f j
   addHeader "Content-Disposition" ("attachment; filename=\"" <> T.pack f' <> "\"")
   sendResponse ("text/plain" :: ByteString, toContent txt)
 
--- hledger-web equivalents of hledger-api's handlers
+-- hledger-web equivalents of the old hledger-api's handlers
+
+getVersionR :: Handler TypedContent
+getVersionR = do
+  VD{caps} <- getViewData
+  when (CapView `notElem` caps) (permissionDenied "Missing the 'view' capability")
+  selectRep $ do
+    provideJson $ version
 
 getAccountnamesR :: Handler TypedContent
 getAccountnamesR = do
@@ -69,7 +81,7 @@ getPricesR = do
   VD{caps, j} <- getViewData
   when (CapView `notElem` caps) (permissionDenied "Missing the 'view' capability")
   selectRep $ do
-    provideJson $ jmarketprices j
+    provideJson $ map priceDirectiveToMarketPrice $ jpricedirectives j
 
 getCommoditiesR :: Handler TypedContent
 getCommoditiesR = do
@@ -90,9 +102,9 @@ getAccounttransactionsR a = do
   VD{caps, j} <- getViewData
   when (CapView `notElem` caps) (permissionDenied "Missing the 'view' capability")
   let
-    ropts = defreportopts
+    rspec = defreportspec
     q = Any --filterQuery (not . queryIsDepth) $ queryFromOpts d ropts'
     thisacctq = Acct $ accountNameToAccountRegex a -- includes subs
   selectRep $ do
-    provideJson $ accountTransactionsReport ropts j q thisacctq
+    provideJson $ accountTransactionsReport rspec j q thisacctq
 

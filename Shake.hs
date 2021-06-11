@@ -1,47 +1,39 @@
 #!/usr/bin/env stack
-{- stack exec
-   --verbosity=info
+{- stack script --resolver lts-17.4 --compile
    --package base-prelude
    --package directory
    --package extra
+   --package process
    --package regex
    --package safe
    --package shake
    --package time
-   ghc
--} -- uses the project's current stack resolver
+-}
 {-
+-- add this to see packages being installed instead of a long silence:
+   --verbosity=info
 
-One of two project scripts files (Makefile, Shake.hs). This one
-provides a stronger programming language and more platform
-independence than Make. It requires stack and will auto-install the
-haskell packages above when needed (on first run or when a new
-resolver is configured in stack.yaml). Some rules below use additional
-tools, including:
+This is one of two collections of maintainer/developer scripts; Makefile is the other.
+This one, based on shake, provides a stronger programming language and
+more platform independence. It requires stack and will auto-install
+the haskell packages above when needed.
 
+Some of the commands below require additional command-line tools, including:
+- GNU date (on mac: brew install coreutils)
 - groff
 - m4
 - makeinfo
 - pandoc
 - sed
-- GNU date (on mac: brew install coreutils)
 
-Compiling this script is recommended, to ensure required packages are
-installed, minimise startup delay, and reduce sensitivity to the
-current git state (eg when bisecting). To compile, run "./Shake.hs".
-(Or "make Shake", or any other make rule depending on Shake).
-
-Once compiled, run ./Shake without any arguments to list commands and
-targets (see below).
-
-When developing/troubleshooting this script, these are useful:
-
-watch Shake.hs for compile errors: make ghcid-shake
-load Shake.hs in GHCI: make ghci-shake
-rebuild things when files change with entr (file watcher), eg:
- find hledger-lib hledger | entr ./Shake website
-view rule dependency graph:
- ./Shake --report, open report.html?mode=rule-graph&query=!name(/(doc%7Cimages%7Cjs%7Ccss%7Cfonts%7Ctime%7Capi%7Cui%7Ccsv)/)
+Some things that may be useful when working on this:
+- https://docs.haskellstack.org/en/stable/GUIDE/#script-interpreter
+- watch Shake.hs for compile errors: make ghcid-shake
+- load Shake.hs in GHCI: make ghci-shake
+- rebuild things when files change with entr (file watcher), eg:
+   find hledger-lib hledger | entr ./Shake manuals
+- view rule dependency graph:
+   ./Shake --report, open report.html?mode=rule-graph&query=!name(/(doc%7Cimages%7Cjs%7Ccss%7Cfonts%7Ctime%7Capi%7Cui%7Ccsv)/)
 
 -}
 
@@ -56,7 +48,7 @@ import "base-prelude" BasePrelude
 import "base"         Control.Exception as C
 -- required packages, keep synced with Makefile -> SHAKEDEPS:
 import "directory"    System.Directory as S (getDirectoryContents)
-import "extra"        Data.List.Extra
+import "extra"        Data.List.Extra hiding (headDef, lastDef)
 import "process"      System.Process
 import "regex"        Text.RE.TDFA.String
 import "regex"        Text.RE.Replace
@@ -66,58 +58,73 @@ import "shake"        Development.Shake.FilePath
 import "time"         Data.Time
 -- import "hledger-lib"  Hledger.Utils.Debug
 
-usage = unlines
+usage =
+  let scriptname = "Shake" in replaceRe [re|/Shake|] ('/':scriptname) $
+  unlines
     ---------------------------------------79--------------------------------------
-  ["Usage:"
-  ,"./Shake.hs               (re)compile this script"
-  ,"./Shake commandhelp      build embedded help texts for the hledger CLI"
-  ,"./Shake manuals          build html/txt/man/info manuals for all packages"
-  ,"./Shake htmlmanuals      build html manuals for all packages"
-  ,"./Shake oldmanuals       build old versions of html manuals for all packages"
-  ,"./Shake PKG              build a single hledger package and its embedded docs"
-  ,"./Shake build            build all hledger packages and their embedded docs"
-  ,"./Shake website          build the website and web manuals"
-  ,"./Shake website-all      build the website and all web manual versions"
-  ,"./Shake all              build all the above"
-  ,"./Shake hledgerorg       update the hledger.org website (when run on prod)"
+  ["hledger developer scripts. See also: make help"
+  ,"Usage:"
+  ,"./Shake.hs [CMD [ARGS]]  run CMD, compiling this script first if needed"
+  ,"./Shake    [CMD [ARGS]]  run CMD, using the compiled version of this script"
+  ,"./Shake [help]           show this help"
+  ,"./Shake cabalfiles [-c]  update */*.cabal files from */package.yaml"
+  ,"./Shake setversion [VER] [PKGS] [-c]"
+  ,"                         update versions in source files to */.version or VER"
+  ,"                         and update */*.cabal files"
+  ,"./Shake cmdhelp [-c]     update hledger CLI commands' help texts"
+  ,"./Shake mandates         update the date shown in some manual formats"
+  ,"./Shake manuals [-c]     update all packages' txt/man/info/web manuals"
+  -- ,"./Shake webmanuals       update just the web manuals"
+  ,"./Shake changelogs [-c] [-n/--dry-run]"
+  ,"                         update CHANGES.md files, adding new commits & headings"
+  ,"./Shake docs [-c]        update all program docs (CLI help, manuals, changelogs)"
+  ,"./Shake build [PKGS]     build hledger packages and their embedded docs"
+  ,"./Shake clean            remove generated texts, manuals"
+  ,"./Shake Clean            also remove object files, Shake's cache"
+  ,"./Shake FILE             build any individual file"
+  ,"./Shake --help           list shake build options (--color, --rebuild, etc."
+  ,"                         Keep shake option arguments adjacent to their flag.)"
   ,""
-  ,"./Shake mainpages                   build the web pages from the main repo"
-  ,"./Shake wikipages                   build the web pages from the wiki repo"
-  -- ,"./Shake site/index.md               update wiki links on the website home page"
-  ,"./Shake FILE                        build any individual file"
-  ,"./Shake setversion                  update all packages from PKG/.version"
-  ,"./Shake changelogs                  update the changelogs with any new commits"
-  ,"./Shake [PKG/]CHANGES.md[-dry]      update or preview this changelog"
-  ,"./Shake [PKG/]CHANGES.md-finalise   set final release heading in this changelog"
-  ,"./Shake site/doc/VERSION/.snapshot  save current web manuals as this snapshot"
-  ,""
-  ,"./Shake clean            clean help texts, manuals, staged site content"
-  ,"./Shake Clean            also clean rendered site, object files, Shake's cache"
-  ,"./Shake [help]           show these commands"
-  ,"./Shake --help           show Shake options (--color, --rebuild, ...)"
-  ,""
-  ,"See also: make help"
+  ,"See comments in Shake.hs for more detailed descriptions."
+  ,"Add -c/--commit to have commands commit their changes."
+  ,"Add -V/-VV/-VVV to see more verbose output."
+  ,"Add -B, with nothing immediately after it, to force rebuilding."
   ]
+-- TODO
+--  ,"./Shake releasebranch      create a new release branch, bump master to next dev version (.99)" 
+--  ,"./Shake majorversion       bump to the next major version project-wide, update affected files"
+--  ,"./Shake minorversion PKGS  bump one or more packages to their next minor version project-wide, update affected files"
+--  ,"./Shake relnotes           create draft release notes"
 
-groff    = "groff"
-makeinfo = "makeinfo"
-pandoc   = "pandoc"
+-- groff    = "groff -c" ++ " -Wall"  -- see "groff" below
+m4 = "m4 -P"
+makeinfo = "makeinfo --no-split --force --no-warn --no-validate"  -- silence makeinfo warnings, comment these to see them
+pandoc   = "pandoc --strip-comments"
+gitcommit = "git commit --allow-empty"
 
--- Must support both BSD sed and GNU sed. Tips:
--- BSD:
+-- We should work with both BSD and GNU sed. Tips:
 -- use [a-z] [0-9] instead of \w \d etc.
--- GNU:
--- backslash-escape {
-sed      = "sed -E"
+-- backslash-escape things like: { &
+sed = "sed -E"
+
+-- We should work with both BSD and GNU grep.
+grep = "grep -E"
 
 -- The kind of markdown used in our doc source files.
 fromsrcmd = "-f markdown-smart-tex_math_dollars"
 
 -- The kind of markdown we like to generate for the website.
-towebmd = "-t markdown-smart-fenced_divs --atx-headers"
+-- This will be consumed by sphinx extensions:
+--  recommonmark (Commonmark syntax, https://spec.commonmark.org)
+--  sphinx-markdown-tables (PHP Markdown Extra table syntax, https://michelf.ca/projects/php-markdown/extra/#table)
+-- XXX trying to force the use of pipe_tables here, but sometimes it uses html instead
+-- --markdown-headings=atx requires pandoc 2.11.2+, with older pandoc use --atx-headers instead
+towebmd = "-t markdown-smart-fenced_divs-fenced_code_attributes-simple_tables-multiline_tables-grid_tables-raw_attribute --markdown-headings=atx"
 
 
 main = do
+
+  -- Gather some IO values used by rules.
 
   -- hledger manual also includes the markdown files from here:
   let commandsdir = "hledger/Hledger/Cli/Commands"
@@ -125,614 +132,609 @@ main = do
     filter (not . ("README." `isPrefixOf`) . takeFileName) . filter (".md" `isSuffixOf`) . map (commandsdir </>)
     <$> S.getDirectoryContents commandsdir
   let commandtxts = map (-<.> "txt") commandmds
-  let wikidir = "wiki"
-  wikipagefilenames <- map dropExtension . filter (".md" `isSuffixOf`) <$> S.getDirectoryContents wikidir
 
-  shakeArgs
-    shakeOptions
-      {
-       shakeVerbosity=Quiet
-      -- ,shakeReport=[".shake.html"]
-      }
-      $ do
+  let sitedir = "site"
+  pages <- map takeBaseName . filter (".md" `isSuffixOf`) <$> S.getDirectoryContents sitedir
 
-    want ["help"]
+  -- Run the shake rule selected by the first command line argument.
+  -- Other arguments and some custom flags are set aside for the rule
+  -- to use if it wants.
 
-    phony "help" $ liftIO $ putStrLn usage
-
-    phony "all" $ need ["commandhelp", "manuals", "build", "website"]
-
-    -- phony "compile" $ need ["Shake"]
-    -- "Shake" %> \out -> do
-    --   need [out <.> "hs"]
-    --   unit $ cmd "./Shake.hs"  -- running as stack script installs deps and compiles
-    --   putLoud "You can now run ./Shake instead of ./Shake.hs"
-
-
-    -- NAMES, FILES, URIS..
-
-    let
-      -- documentation versions shown on the website
-      docversions = [ "0.27", "1.0" , "1.1" , "1.2" , "1.3" , "1.4" , "1.5" , "1.9", "1.10", "1.11", "1.12", "1.13", "1.14" ]
-
-      -- main package names, in standard build order
-      packages = [
-         "hledger-lib"
-        ,"hledger"
-        ,"hledger-ui"
-        ,"hledger-web"
-        ,"hledger-api"
-        ]
-
-      changelogs = "CHANGES.md" : map (</> "CHANGES.md") packages
-
-      -- doc files (or related targets) that should be generated
-      -- before building hledger packages.
-      -- [(PKG, [TARGETS])]
-      embeddedFiles = [
-         -- hledger embeds the plain text command help files and all packages' text/nroff/info manuals
-         ("hledger", commandtxts ++ ["manuals"])
-         -- hledger-ui imports the hledger-ui manuals from hledger
-        ,("hledger-ui", ["hledger"])
-        ]
-
-      -- man page names (manual names plus a man section number), in suggested reading order
-      manpageNames = [
-         "hledger.1"
-        ,"hledger-ui.1"
-        ,"hledger-web.1"
-        ,"hledger-api.1"
-        ,"hledger_journal.5"
-        ,"hledger_csv.5"
-        ,"hledger_timeclock.5"
-        ,"hledger_timedot.5"
-        ]
-
-      -- basic manual names, without numbers
-      manualNames = map manpageNameToManualName manpageNames
-
-      -- main markdown+m4 source files for manuals (hledger/hledger.m4.md)
-      -- These may include additional files using m4.
-      m4manuals = [manualDir m </> m <.> "m4.md" | m <- manualNames]
-
-      -- manuals rendered to nroff, ready for man (hledger/hledger.1)
-      nroffmanuals = [manpageDir m </> m | m <- manpageNames]
-
-      -- manuals rendered to plain text, ready for embedding (hledger/hledger.txt)
-      txtmanuals = [manualDir m </> m <.> "txt" | m <- manualNames]
-
-      -- manuals rendered to info, ready for info (hledger/hledger.info)
-      infomanuals = [manualDir m </> m <.> "info" | m <- manualNames]
-
-      -- individual manuals rendered to markdown, ready for conversion to html (site/hledger.md)
-      mdmanuals = ["site" </> manpageNameToUri m <.> "md" | m <- manpageNames]
-
-      -- latest version of the manuals rendered to html
-      htmlmanuals = ["site/_site" </> manpageNameToUri m <.> "html" | m <- manpageNames++["manual"]]
-
-      -- old versions of the manuals rendered to html
-      oldhtmlmanuals = map (normalise . ("site/_site/doc" </>) . (<.> "html")) $
-        [ v </> manpageNameToUri p | v <- docversions, v>="1.0", p <- manpageNames ++ ["manual"] ] ++
-        [ v </> "manual"           | v <- docversions, v <"1.0" ]  -- before 1.0 there was only the combined manual
-
-      -- the html for website pages kept in the main repo
-      mainpageshtml = map (normalise . ("site/_site" </>) . (<.> "html")) [
-        -- from site/*.md
-         "contributors"
-        ,"download"
-        ,"ledgertips"
-        ,"index"
-        ,"intro"
-        ,"release-notes"
-        -- some copied from elsewhere
-        -- ,"README"
-        ,"CONTRIBUTING"
-        ]
-
-      -- the html for website pages kept in the wiki repo (cookbook content)
-      wikipageshtml = map (normalise . ("site/_site" </>) . (<.> ".html")) wikipagefilenames
-
-      -- TODO: make website URIs lower-case ?
-
-      -- manuals rendered to markdown and combined, ready for web rendering
-      mdcombinedmanual = "site/manual.md"
-
-      -- extensions of static web asset files, to be copied to the website
-      webassetexts = ["png", "gif", "cur", "js", "css", "eot", "ttf", "woff", "svg"]
-
-      -- The directory in which to find this man page.
-      -- hledger.1 -> hledger/doc, hledger_journal.5 -> hledger-lib/doc
-      manpageDir m
-        | '_' `elem` m = "hledger-lib"
-        | otherwise    = dropExtension m
-
-      -- The directory in which to find this manual.
-      -- hledger -> hledger, hledger_journal -> hledger-lib
-      manualDir m
-        | '_' `elem` m = "hledger-lib"
-        | otherwise    = m
-
-      -- The URI corresponding to this man page.
-      -- hledger.1 -> hledger, hledger_journal.5 -> journal
-      manpageNameToUri m | "hledger_" `isPrefixOf` m = dropExtension $ drop 8 m
-                         | otherwise                 = dropExtension m
-
-      -- The man page corresponding to this URI.
-      -- hledger -> hledger.1, journal -> hledger_journal.5
-      manpageUriToName u | "hledger" `isPrefixOf` u = u <.> "1"
-                         | otherwise                = "hledger_" ++ u <.> "5"
-
-    -- MANUALS
-
-    -- Generate the manuals in nroff, plain text and info formats.
-    phony "manuals" $ need $ concat [
-       nroffmanuals
-      ,infomanuals
-      ,txtmanuals
-      ,htmlmanuals
+  -- Option arguments should be kept adjacent to their flag or this will go wrong.
+  (opts, args) <- partition ("-" `isPrefixOf`) <$> getArgs
+  let
+    ruleoptnames = [
+       "--commit", "-c"
+      ,"--dry-run", "--dry", "-n"
       ]
+    (ruleopts, shakeopts) = partition (`elem` ruleoptnames) opts
+    commit = any (`elem` ruleopts) ["--commit", "-c"]
+    dryrun = any (`elem` ruleopts) ["--dry-run", "--dry", "-n"]
+    (shakearg, ruleargs) = splitAt 1 args
+    shakeargs = shakeopts ++ shakearg
+  -- print (opts,args,shakeopts,shakearg,shakeargs,ruleopts,ruleargs)
 
-    -- Generate nroff man pages suitable for man output.
-    phony "nroffmanuals" $ need nroffmanuals
-    nroffmanuals |%> \out -> do -- hledger/hledger.1
-      let src       = manpageNameToManualName out <.> "m4.md"
-          commonm4  = "doc/common.m4"
-          dir       = takeDirectory out
-          packagem4 = dir </> "defs.m4"
-          tmpl      = "doc/manpage.nroff"
-      -- assume all other m4 files in dir are included by this one XXX not true in hledger-lib
-      deps <- liftIO $ filter (/= src) . filter (".m4.md" `isSuffixOf`) . map (dir </>) <$> S.getDirectoryContents dir
-      need $ [src, commonm4, packagem4, tmpl] ++ deps
-      when (dir=="hledger") $ need commandmds
-      cmd Shell
-        "m4 -P -DMAN -I" dir commonm4 packagem4 src "|"
-        pandoc fromsrcmd "-s" "--template" tmpl
-        "--lua-filter tools/pandoc-drop-html-blocks.lua"
-        "--lua-filter tools/pandoc-drop-html-inlines.lua"
-        "--lua-filter tools/pandoc-drop-links.lua"
-        "-o" out
+  withArgs shakeargs $ shakeArgs shakeOptions{
+    shakeVerbosity=Quiet
+    -- ,shakeReport=[".shake.html"]
+    }
+    $ do
+   
+  -- The rules.
+  
+      want ["help"]
 
-    -- Generate plain text manuals suitable for embedding in
-    -- executables and viewing with a pager.
-    phony "txtmanuals" $ need txtmanuals
-    txtmanuals |%> \out -> do  -- hledger/hledger.txt
-      let src = manualNameToManpageName $ dropExtension out
-      need [src]
-      cmd Shell groff "-t -e -mandoc -Tascii" src  "| col -bx >" out -- http://www.tldp.org/HOWTO/Man-Page/q10.html
+      phony "help" $ liftIO $ putStr usage
 
-    -- Generate Info manuals suitable for viewing with info.
-    phony "infomanuals" $ need infomanuals
-    infomanuals |%> \out -> do -- hledger/hledger.info
-      let src       = out -<.> "m4.md"
-          commonm4  = "doc/common.m4"
-          dir       = takeDirectory out
-          packagem4 = dir </> "defs.m4"
-      -- assume all other m4 files in dir are included by this one XXX not true in hledger-lib
-      deps <- liftIO $ filter (/= src) . filter (".m4.md" `isSuffixOf`) . map (dir </>) <$> S.getDirectoryContents dir
-      need $ [src, commonm4, packagem4] ++ deps
-      when (dir=="hledger") $ need commandmds
-      cmd Shell
-        "m4 -P -I" dir commonm4 packagem4 src "|"
-        pandoc fromsrcmd
-        "--lua-filter tools/pandoc-drop-html-blocks.lua"
-        "--lua-filter tools/pandoc-drop-html-inlines.lua"
-        "--lua-filter tools/pandoc-drop-links.lua"
-        "-t texinfo |"
-        makeinfo "--force --no-split -o" out
+      -- NAMES, FILES, URIS, HELPERS
 
+      let
+        -- main package names, in standard build order
+        packages = [
+           "hledger-lib"
+          ,"hledger"
+          ,"hledger-ui"
+          ,"hledger-web"
+          ]
+        pkgdirs = packages
+        pkgandprojdirs = "" : pkgdirs
+        cabalfiles = [p </> p <.> "cabal" | p <- packages]
+        changelogs = map (</> "CHANGES.md") pkgandprojdirs
+        packagemanversionm4s = [p </> ".version.m4" | p <- packages]
+        packagemandatem4s = [p </> ".date.m4" | p <- packages]
 
-    -- WEBSITE MARKDOWN SOURCE
+        -- doc files (or related targets) that should be generated
+        -- before building hledger packages.
+        -- [(PKG, [TARGETS])]
+        embeddedFiles = [
+           -- hledger embeds the plain text command help files and all packages' text/nroff/info manuals
+           ("hledger", commandtxts ++ ["manuals"])
+           -- hledger-ui imports the hledger-ui manuals from hledger
+          ,("hledger-ui", ["hledger"])
+          ]
 
-    -- Generate the individual web manuals' markdown source, using m4
-    -- and pandoc to tweak content.
-    phony "mdmanuals" $ need mdmanuals
-    mdmanuals |%> \out -> do -- site/hledger.md
-      let manpage   = manpageUriToName $ dropExtension $ takeFileName out -- hledger
-          manual    = manpageNameToManualName manpage
-          dir       = manpageDir manpage
-          src       = dir </> manual <.> "m4.md"
-          commonm4  = "doc/common.m4"
-          packagem4 = dir </> "defs.m4"
-          heading   = let h = manual
-                      in if "hledger_" `isPrefixOf` h
-                         then drop 8 h ++ " format"
-                         else h
-      -- assume all other m4 files in dir are included by this one XXX not true in hledger-lib
-      deps <- liftIO $ filter (/= src) . filter (".m4.md" `isSuffixOf`) . map (dir </>) <$> S.getDirectoryContents dir
-      need $ [src, commonm4, packagem4] ++ deps
-      when (manual=="hledger") $ need commandmds
-      liftIO $ writeFile out $ "# " ++ heading ++ "\n\n"
-      cmd Shell
-        "m4 -P -DMAN -DWEB -I" dir commonm4 packagem4 src "|"
-        pandoc fromsrcmd towebmd
-        "--lua-filter tools/pandoc-demote-headers.lua"
-        ">>" out
+        -- man page names (manual names plus a man section number), in suggested reading order
+        manpageNames = [
+           "hledger.1"
+          ,"hledger-ui.1"
+          ,"hledger-web.1"
+          ]
 
-    -- Generate the combined web manual's markdown source, by
-    -- concatenating tweaked versions of the individual manuals.
-    phony "mdcombinedmanual" $ need [ mdcombinedmanual ]
-    mdcombinedmanual %> \out -> do
-      need mdmanuals
-      liftIO $ writeFile mdcombinedmanual $ addToc ""
-      forM_ mdmanuals $ \f -> do -- site/hledger.md, site/journal.md
-        cmd_ Shell ("printf '\\n\\n' >>") mdcombinedmanual
-        cmd_ Shell pandoc f towebmd
-          "--lua-filter tools/pandoc-drop-toc.lua"
-          "--lua-filter tools/pandoc-demote-headers.lua"
-          ">>" mdcombinedmanual
+        -- basic manual names, without numbers
+        manualNames = map manpageNameToManualName manpageNames
 
-    -- Copy some extra markdown files from the main repo into the site
-    -- TODO adding table of contents placeholders
-    [
-      -- "site/README.md",
-      -- "site/CONTRIBUTING.md"
-      ]  |%> \out ->
-      copyFile' (dropDirectory1 out) out -- XXX (map toLower out)
+        -- main markdown+m4 source files for manuals (hledger/hledger.m4.md)
+        -- These may include additional files using m4.
+        m4manuals = [manualDir m </> m <.> "m4.md" | m <- manualNames]
 
-    -- WEBSITE HTML & ASSETS
+        -- manuals as plain text, ready for embedding as CLI help (hledger/hledger.txt)
+        txtmanuals = [manualDir m </> m <.> "txt" | m <- manualNames]
 
-    phony "website" $ need [
-       "webassets"
-      ,"mainpages"
-      ,"wikipages"
-      ,"htmlmanuals"
-      ]
+        -- manuals as nroff, ready for man (hledger/hledger.1)
+        nroffmanuals = [manpageDir m </> m | m <- manpageNames]
 
-    phony "website-all" $ need [
-       "website"
-      ,"oldmanuals"
-      ]
+        -- manuals as info, ready for info (hledger/hledger.info)
+        infomanuals = [manualDir m </> m <.> "info" | m <- manualNames]
 
-    -- copy all static asset files (files with certain extensions
-    -- found under sites, plus one or two more) to sites/_site/
-    phony "webassets" $ do
-        assets <- getDirectoryFiles "site" (map ("//*" <.>) webassetexts)
-        need [ "site/_site" </> file
-                | file <- assets ++ [
-                    "files/README"
-                    ]
-                , not ("_site//*" ?== file)
-             ]
+        -- manuals as sphinx-ready markdown, to be rendered as part of the website (hledger/hledger.md)
+        webmanuals = [manualDir m </> m <.> "md" | m <- manualNames]
 
-    -- copy any one of the static asset files to sites/_site/
-    "site/_site/files/README" : [ "site/_site//*" <.> ext | ext <- webassetexts ] |%> \out -> do
-        copyFile' ("site" </> dropDirectory2 out) out
+        -- -- old versions of the manuals rendered to html (site/_site/doc/1.14/hledger.html)
+        -- oldhtmlmanuals = map (normalise . ("site/_site/doc" </>) . (<.> "html")) $
+        --   [ v </> manpageNameToWebManualName p | v <- docversions, v>="1.0", p <- manpageNames ++ ["manual"] ] ++
+        --   [ v </> "manual"           | v <- docversions, v <"1.0" ]  -- before 1.0 there was only the combined manual
 
-    -- embed the wiki's latest table of contents into the main site's home page
-    "site/index.md" %> \out -> do
-      wikicontent <- dropWhile (not . ("#" `isPrefixOf`)) . lines <$> readFile' "wiki/Home.md"
-      old <- liftIO $ readFileStrictly "site/index.md"
-      let (startmarker, endmarker) = ("<!-- WIKICONTENT -->", "<!-- ENDWIKICONTENT -->")
-          (before, after') = break (startmarker `isPrefixOf`) $ lines old
-          (_, after)       = break (endmarker   `isPrefixOf`) $ after'
-          new = unlines $ concat [before, [startmarker], wikicontent, after]
-      liftIO $ writeFile out new
+        -- The directory in which to find this man page.
+        -- hledger.1 -> hledger/doc, hledger_journal.5 -> hledger-lib/doc
+        manpageDir m
+          | '_' `elem` m = "hledger-lib"
+          | otherwise    = dropExtension m
 
-    -- render all web pages from the main repo (manuals, home, download, relnotes etc) as html, saved in site/_site/
-    phony "mainpages" $ need mainpageshtml
+        -- The directory in which to find this manual.
+        -- hledger -> hledger, hledger_journal -> hledger-lib
+        manualDir m
+          | '_' `elem` m = "hledger-lib"
+          | otherwise    = m
 
-    -- render all pages from the wiki as html, saved in site/_site/.
-    -- We assume there are no filename collisions with mainpages.
-    phony "wikipages" $ need wikipageshtml
+        -- The web manual name (& URI "slug") corresponding to this man page.
+        -- hledger.1 -> hledger, hledger_journal.5 -> journal
+        manpageNameToWebManualName m | "hledger_" `isPrefixOf` m = dropExtension $ drop 8 m
+                                     | otherwise                 = dropExtension m
 
-    phony "htmlmanuals" $ need htmlmanuals
+        -- The man page corresponding to this web manual name.
+        -- hledger -> hledger.1, journal -> hledger_journal.5
+        webManualNameToManpageName u | "hledger" `isPrefixOf` u = u <.> "1"
+                                     | otherwise                = "hledger_" ++ u <.> "5"
 
-    phony "oldmanuals" $ need oldhtmlmanuals
+      -- VERSION NUMBERS
 
-    -- Render one website page (main or wiki) as html, saved in sites/_site/.
-    -- Wiki pages will have a heading and TOC placeholder prepended.
-    -- The download page will have a TOC placeholder prepended.
-    -- All pages will have github-style wiki links hyperlinked.
-    "site/_site//*.html" %> \out -> do
-        let filename = takeBaseName out
-            pagename = fileNameToPageName filename
-            iswikipage = filename `elem` wikipagefilenames
-            isdownloadpage = filename == "download"
-            isoldmanual = "site/_site/doc/" `isPrefixOf` out
-            source
-              | iswikipage  = "wiki" </> filename <.> "md"
-              | isoldmanual = "site" </> (drop 11 $ dropExtension out) <.> "md"
-              | otherwise   = "site" </> filename <.> "md"
-            template = "site/site.tmpl"
-            siteRoot = if "site/_site/doc//*" ?== out then "../.." else "."
-            maybeAddToc | iswikipage     = addHeading pagename . addToc
-                        | isdownloadpage = addToc
-                        | otherwise      = id
-        need [source, template]
-        -- read markdown source, link any wikilinks, maybe add a heading and TOC, pipe it to pandoc, write html out
-        Stdin . wikiLink . maybeAddToc <$> (readFile' source) >>=
-          (cmd Shell pandoc "-" fromsrcmd "-t html"
-                           "--template" template
-                           ("--metadata=siteRoot:" ++ siteRoot)
-                           ("--metadata=\"title:" ++ pagename ++ "\"")
-                           "--lua-filter=tools/pandoc-toc.lua"
-                           "-o" out )
+      -- Regenerate .cabal files from package.yaml files, using stack build --dry-run.
+      -- (used by "cabalfiles" and "setversion")
+      let docabalfiles = do
+          -- stack can fail to update cabal files with zero exit status,
+          -- so we need to to check stderr, and specifically for the error message 
+          -- since all output goes there
+          err <- fromStderr <$>
+            -- stack 1.7 no longer updates cabal files with --dry-run, must do a full build
+            -- (or use hpack, of similar version)
+            (cmd Shell "stack build" :: Action (Stderr String))
+          when ("was generated with a newer version of hpack" `isInfixOf` err) $
+            liftIO $ putStr err >> exitFailure
+          when commit $ do
+            let msg = ";update cabal files"
+            cmd Shell gitcommit ("-m '"++msg++"' --") cabalfiles
 
-    -- This rule, for updating the live hledger.org site, gets called by:
-    -- 1. github-post-receive (github webhook handler), when something is pushed
-    --    to the main or wiki repos on Github. Config:
-    --     /etc/supervisord.conf -> [program:github-post-receive]
-    --     /etc/github-post-receive.conf
-    -- 2. cron, nightly. Config: /etc/crontab
-    -- 3. manually (make site).
-    phony "hledgerorg" $ do
-      -- XXX ideally we would ensure here that output is logged in site.log,
-      -- but I don't know how to do that for the Shake rules.
-      -- Instead we'll do the logging in "make site".
-      cmd_ Shell
-
-        -- print timestamp. On mac, use brew-installed GNU date.
-        "PATH=\"/usr/local/opt/coreutils/libexec/gnubin:$PATH\" date --rfc-3339=seconds"
-        -- pull latest wiki repo
-        "&& printf 'wiki repo: ' && git -C wiki pull"
-        -- pull latest main repo - sometimes already done by webhook, not always
-        "&& printf 'main repo: ' && git pull"
-
-      -- Shake.hs might have been updated, but we won't execute the
-      -- new one, too insecure. Continue with this one.
-
-      -- update wiki links on website front page
-      need [ "site/index.md" ]
-
-      -- if it changed, commit (and push) it.
-      -- XXX the push will cause another webhook invocation of this script, try to avoid
-      cmd_ Shell
-        "git diff --quiet -- site/index.md"
-        "|| ("
-          "git commit -m ';site: update cookbook links' -m '[ci skip]' site/index.md"
-          "&& git push"
-        ")"
-
-      -- update the live site based on all latest content
-      need [ "website-all" ]
-
-    -- HLEDGER PACKAGES/EXECUTABLES
-
-    phony "build" $ need packages
-
-    -- build any of the hledger packages, after generating any doc
-    -- files they embed or import.
-    sequence_ [ phony pkg $ do
-      need $ fromMaybe [] $ lookup pkg embeddedFiles
-      cmd Shell "stack build " pkg
-      | pkg <- packages ]
-
-    phony "commandhelp" $ need commandtxts
-    
-    commandtxts |%> \out -> do
-      let src = out -<.> "md"
-      need [src]
-      cmd Shell
-        pandoc fromsrcmd src "--lua-filter" "tools/pandoc-dedent-code-blocks.lua" "-t plain" ">" out
-
-    -- CHANGELOGS
-
-    let
-      -- git log showing short commit hashes
-      gitlog = "git log --abbrev-commit"
-
-      -- git log formats suitable for changelogs/release notes
-      -- %s=subject, %an=author name, %n=newline if needed, %w=width/indent1/indent2, %b=body, %h=hash
-      changelogGitFormat = "--pretty=format:'- %s (%an)%n%w(0,2,2)%b'"
-      -- changelogVerboseGitFormat = "--pretty=format:'- %s (%an)%n%w(0,2,2)%b%h' --stat"
-
-      -- Format a git log message, with one of the formats above, as a changelog item
-      changelogCleanupCmd = unwords [
-         sed
-        ,"-e 's/^( )*\\* /\1- /'"        --  ensure bullet lists in descriptions use hyphens not stars
-        ,"-e 's/ \\(Simon Michael\\)//'" --  strip maintainer's author name
-        ,"-e 's/^- (doc: *)?(updated? *)?changelogs?( *updates?)?$//'"  --  strip some variants of "updated changelog"
-        ,"-e 's/^ +\\[ci skip\\] *$//'"  --  strip [ci skip] lines
-        ,"-e 's/^ +$//'"                 --  replace lines containing only spaces with empty lines
-        -- ,"-e 's/\r//'"                   --  strip windows carriage returns (XXX \r untested. IDEA doesn't like a real ^M here)
-        ,"-e '/./,/^$/!d'"               --  replace consecutive newlines with one
-        ]
-
-      -- Things to exclude when doing git log for project-wide changelog.
-      -- git exclude pathspecs, https://git-scm.com/docs/gitglossary.html#gitglossary-aiddefpathspecapathspec
-      projectChangelogExcludeDirs = unwords [
-         ":!hledger-lib"
-        ,":!hledger"
-        ,":!hledger-ui"
-        ,":!hledger-web"
-        ,":!hledger-api"
-        ,":!tests"
-        ]
-
-    -- update all changelogs with latest commits
-    phony "changelogs" $ need changelogs
-
-    -- show the changelogs updates that would be written
-    -- phony "changelogs-dry" $ need changelogsdry
-
-    -- [PKG/]CHANGES.md[-dry] <- git log
-    -- Add commits to the specified changelog since the tag/commit in
-    -- the topmost heading, also removing that previous heading if it
-    -- was an interim heading (a commit hash). Or (the -dry variants)
-    -- just print the new changelog items to stdout without saving.
-    phonys (\out' -> if
-      | not $ out' `elem` (changelogs ++ map (++"-dry") changelogs) -> Nothing
-      | otherwise -> Just $ do
-        let (out, dryrun) | "-dry" `isSuffixOf` out' = (take (length out' - 4) out', True)
-                          | otherwise                = (out', False)
-        old <- liftIO $ lines <$> readFileStrictly out
-
-        let dir = takeDirectory out
-            pkg | dir=="."  = Nothing
-                | otherwise = Just dir
-            gitlogpaths = fromMaybe projectChangelogExcludeDirs pkg
-            isnotheading = not . ("#" `isPrefixOf`)
-            iscommithash s = length s > 6 && all isAlphaNum s
-            (preamble, oldheading:rest) = span isnotheading old
-            lastversion = words oldheading !! 1
-            lastrev | iscommithash lastversion = lastversion
-                    | otherwise                = fromMaybe "hledger" pkg ++ "-" ++ lastversion
-
-        headrev <- unwords . words . fromStdout <$>
-                   (cmd Shell gitlog "-1 --pretty=%h -- " gitlogpaths :: Action (Stdout String))
-
-        if headrev == lastrev
-        then liftIO $ putStrLn $ out ++ ": up to date"
-        else do
-          newitems <- fromStdout <$>
-                        (cmd Shell gitlog changelogGitFormat (lastrev++"..") "--" gitlogpaths
-                         "|" changelogCleanupCmd :: Action (Stdout String))
-          let newcontent = "# "++headrev++"\n\n" ++ newitems
-              newfile = unlines $ concat [
-                 preamble
-                ,[newcontent]
-                ,if iscommithash lastrev then [] else [oldheading]
-                ,rest
-                ]
-          liftIO $ if dryrun
-                   then putStr newcontent
-                   else writeFile out newfile
-        )
-
-    -- [PKG/]CHANGES.md-finalise <- PKG/.version
-    -- Converts the specified changelog's topmost heading, if it is an
-    -- interim heading (a commit hash), to a permanent heading
-    -- containing the intended release version (from .version) and
-    -- today's date.  For the project CHANGES.md, the version number
-    -- in hledger/.version is used.
-    phonys (\out' -> let suffix = "-finalise" in if
-      | not $ out' `elem` (map (++suffix) changelogs) -> Nothing
-      | otherwise -> Just $ do
+      -- Update version strings in most "source" files to match what's in PKG/.version.
+      -- If a version number is provided as first argument, save that in PKG/.version files first.
+      -- If one or more subdirectories are provided as arguments, save/update only those.
+      -- Also regenerates .cabal files from package.yaml files.
+      -- See also CONTRIBUTING.md > Version numbers.
+      phony "setversion" $ do
         let
-          out = take (length out' - length suffix) out'
-          versiondir = case takeDirectory out of
-                         "." -> "hledger"
-                         d   -> d
-          versionfile = versiondir </> ".version"
+          (mver, dirargs) = (headMay ver', drop 1 ver' ++ dirs')
+            where (ver',dirs') = span isVersion ruleargs
+          (specifieddirs, specifiedpkgs) =
+            case dirargs of [] -> (pkgandprojdirs, pkgdirs)
+                            ds -> (ds, ds)
+        -- if a version was provided, update .version files in the specified directories
+        let specifiedversionfiles = map (</> ".version") specifieddirs
+        case mver of
+          Just v  -> liftIO $ forM_ specifiedversionfiles $ flip maybeWriteFile (v++"\n")
+          Nothing -> return ()
+
+        -- update "source" files depending on .version in the specified packages
+        let dependents = concat [
+               map (</> ".version.m4")  specifiedpkgs
+              ,map (</> "package.yaml") specifiedpkgs
+              ]
+        need dependents
+
+        -- and maybe commit them
+        when commit $ do
+          let msg = unwords [
+                 ";bump"
+                ,case dirargs of
+                   [] -> "version"
+                   ds -> intercalate ", " ds ++ " version"
+                ,case mver of
+                   Nothing -> ""
+                   Just v  -> "to " ++ v
+                ]
+          cmd Shell gitcommit ("-m '"++msg++"' --") specifiedversionfiles dependents
+
+        docabalfiles
+
+      -- PKG/.version.m4 <- PKG/.version, just updates the _version_ macro
+      "hledger*/.version.m4" %> \out -> do
+        let versionfile = takeDirectory out </> ".version"
         need [versionfile]
         version <- ((head . words) <$>) $ liftIO $ readFile versionfile
-        old     <- liftIO $ readFileStrictly out
-        date    <- liftIO getCurrentDay
-        let (before, _:after) = break ("# " `isPrefixOf`) $ lines old
-            new = unlines $ before ++ ["# "++version++" "++show date] ++ after
-        liftIO $ writeFile out new
-        )
+        cmd_ Shell sed "-i -e" ("'s/(_version_}}, *)\\{\\{[^}]+/\\1{{"++version++"/;'") out
 
-    -- VERSION NUMBERS
+      -- PKG/package.yaml <- PKG/.version, just updates version strings
+      "hledger*/package.yaml" %> \out -> do
+        let versionfile = takeDirectory out </> ".version"
+        need [versionfile]
+        version <- ((head . words) <$>) $ liftIO $ readFile versionfile
+        let ma:jor:_ = splitOn "." version
+            nextmajorversion = intercalate "." $ ma : (show $ read jor+1) : []
 
-    -- Given the desired version string saved in PKG/.version, update
-    -- it everywhere needed in the package. See also CONTRIBUTING.md >
-    -- Version numbers.
+        -- One simple task: update some strings in a small text file.
+        -- Several ugly solutions:
+        --
+        -- 1. use haskell list utils. Tedious.
+        -- old <- liftIO $ readFileStrictly out
+        -- let isversionline s = "version" `isPrefixOf` (dropWhile isSpace $ takeWhile (not.(`elem` " :")) s)
+        --     (before, _:after) = break isversionline $ lines old
+        --     -- oldversion = words versionline !! 1
+        --     new = unlines $ before ++ ["version: "++version] ++ after
+        -- liftIO $ writeFile out new
+        --
+        -- 2. use regular expressions in haskell. Haskell has no portable,
+        -- featureful, replacing, backreference-supporting regex lib yet.
+        --
+        -- 3. use sed. Have to assume non-GNU sed, eg on mac.
 
-    let inAllPackages f = map (</> f) packages
+        -- Things to update in package.yaml:
+        --
+        --  version: VER
+        cmd_ Shell sed "-i -e" ("'s/(^version *:).*/\\1 "++version++"/'") out
+        --
+        --  -DVERSION="VER"
+        cmd_ Shell sed "-i -e" ("'s/(-DVERSION=)\"[^\"]+/\\1\""++version++"/'") out
+        --
+        --  this package's dependencies on other hledger packages (typically hledger-lib, hledger)
+        --
+        --  This one is a bit tricky, and we do it with these limitations:
+        --  a. We handle bounds in one of these forms (allowing extra whitespace):
+        --     ==A
+        --     >A
+        --     >=A
+        --     >A && <B
+        --     >=A && <B
+        --  b. We set
+        --     the new lower bound to:         this package's new version, V
+        --     the new upper bound if any, to: the next major version after V
+        --     both of which may not be what's desired.
+        --  c. We convert > bounds to >= bounds.
+        --
+        --  hledger[-PKG] ==LOWER
+        let versionre = "([0-9]+\\.)*[0-9]+"  -- 2 or 3 part version number regexp
+        cmd_ Shell sed "-i -e" ("'s/(hledger(-[a-z]+)?) *== *"++versionre++" *$/\\1 == "++version++"/'") out
+        --
+        --  hledger[-PKG] >[=]LOWER
+        cmd_ Shell sed "-i -e" ("'s/(hledger(-[a-z]+)?) *>=? *"++versionre++" *$/\\1 >= "++version++"/'") out
+        --
+        --  hledger[-PKG] >[=]LOWER && <UPPER
+        let
+          pat = "(hledger(-[a-z]+)?) *>=? *"++versionre++" *&& *< *"++versionre++" *$"
+          rpl = "\\1 >="++version++" \\&\\& <"++nextmajorversion -- This was a beast. These ampersands must be backslash-escaped.
+          arg = "'s/"++pat++"/"++rpl++"/'"
+        cmd_ Shell sed "-i -e" arg out
 
-    phony "setversion" $ need $
-         inAllPackages "defs.m4"
-      ++ inAllPackages "package.yaml"
+        let pkg = takeDirectory out
+        when (pkg /= "hledger-lib") $ liftIO $ do
+          putStrLn $ out++": hledger bounds are (improve if needed):"
+          cmd_ Shell grep "'^ *- +hledger.*[<>=]'" out 
+            " || [[ $? == 1 ]]"  -- ignore no matches, https://unix.stackexchange.com/a/427598
 
-    -- PKG/defs.m4 <- PKG/.version
-    "hledger*/defs.m4" %> \out -> do
-      let versionfile = takeDirectory out </> ".version"
-      need [versionfile]
-      version <- ((head . words) <$>) $ liftIO $ readFile versionfile
-      cmd_ Shell sed "-i -e" ("'s/(_version_}}, *)\\{\\{[^}]+/\\1{{"++version++"/'") out
+      phony "cabalfiles" $ docabalfiles
 
-    -- PKG/package.yaml <- PKG/.version
-    "hledger*/package.yaml" %> \out -> do
-      let versionfile = takeDirectory out </> ".version"
-      need [versionfile]
-      version <- ((head . words) <$>) $ liftIO $ readFile versionfile
-      let ma:jor:_ = splitOn "." version
-          nextmajorversion = intercalate "." $ ma : (show $ read jor+1) : []
+      -- MANUALS
 
-      -- One simple task: update some strings in a small text file.
-      -- Several ugly solutions:
-      --
-      -- 1. use haskell list utils. Tedious.
-      -- old <- liftIO $ readFileStrictly out
-      -- let isversionline s = "version" `isPrefixOf` (dropWhile isSpace $ takeWhile (not.(`elem` " :")) s)
-      --     (before, _:after) = break isversionline $ lines old
-      --     -- oldversion = words versionline !! 1
-      --     new = unlines $ before ++ ["version: "++version] ++ after
-      -- liftIO $ writeFile out new
-      --
-      -- 2. use regular expressions in haskell. Haskell has no portable,
-      -- featureful, replacing, backreference-supporting regex lib yet.
-      --
-      -- 3. use sed. Have to assume non-GNU sed, eg on mac.
+      -- Generate the manuals in plain text, nroff, info, and markdown formats.
+      phony "manuals" $ do
+        need $ concat [
+               nroffmanuals
+              ,infomanuals
+              ,txtmanuals
+              ,webmanuals
+              ]
+        when commit $ do
+          let msg = ";update manuals"
+          cmd Shell gitcommit ("-m '"++msg++"' --") packagemandatem4s nroffmanuals infomanuals txtmanuals
 
-      -- Things to update in package.yaml:
+      -- Update the dates to show in man pages, to the current month and year.
+      -- Currently must be run manually when needed.
+      -- Dates are stored in PKG/.date.m4, and are committed along with manuals by Shake manuals -c.
+      phony "mandates" $ do
+        date <- chomp . fromStdout <$> (cmd Shell "date +'%B %Y'" :: Action (Stdout String))
+        forM_ packagemandatem4s $ \f -> do
+          cmd_ Shell ["perl","-pi","-e","'s/(.*)\\{\\{.*}}(.*)$/\\1\\{\\{"++date++"}}\\2/'",f]
+
+      -- Generate nroff man pages suitable for man output, from the .m4.md source.
+      -- Also updates the _monthyear_ macro to current month and year in hledger*/.date.m4.
+      phony "nroffmanuals" $ need nroffmanuals
+      nroffmanuals |%> \out -> do -- hledger/hledger.1
+        let src       = manpageNameToManualName out <.> "m4.md"
+            commonm4  = "doc/common.m4"
+            commandsm4 = "hledger/Hledger/Cli/Commands/commands.m4"
+            dir       = takeDirectory out
+            pkg       = dir
+            packagemanversionm4 = dir </> ".version.m4"
+            packagemandatem4 = dir </> ".date.m4"
+            tmpl      = "doc/manpage.nroff"
+        pkgversion <- liftIO $ readFile $ dir </> ".version"
+        -- mandate <- formatTime defaultTimeLocale "%B %Y" <$> liftIO getCurrentDay  -- XXX not using this.. compare with .date.m4
+        -- assume any other .m4.md files in dir are included by this one XXX not true in hledger-lib
+        subfiles <- liftIO $ filter (/= src) . filter (".m4.md" `isSuffixOf`) . map (dir </>) <$> S.getDirectoryContents dir
+        need $ [src, commonm4, commandsm4, packagemanversionm4, packagemandatem4, tmpl] ++ subfiles
+        when (dir=="hledger") $ need commandmds
+        cmd Shell
+          m4 "-DMAN -I" dir commonm4 commandsm4 packagemanversionm4 packagemandatem4 src "|"
+          pandoc fromsrcmd "-s" "--template" tmpl
+          ("-V footer='"++pkg++"-"++pkgversion++"'")
+          "--lua-filter tools/pandoc-drop-html-blocks.lua"
+          "--lua-filter tools/pandoc-drop-html-inlines.lua"
+          "--lua-filter tools/pandoc-drop-links.lua"
+          "-o" out
+
+      -- Generate plain text manuals suitable for embedding in
+      -- executables and viewing with a pager, from the man pages.
+      -- (Depends on the nroffmanuals.)
+      phony "txtmanuals" $ need txtmanuals
+      txtmanuals |%> \out -> do  -- hledger/hledger.txt
+        let src = manualNameToManpageName $ dropExtension out
+        need [src]
+        -- cmd Shell groff "-t -e -mandoc -Tascii" src  "| col -b >" out -- http://www.tldp.org/HOWTO/Man-Page/q10.html
+        -- Workaround: groff 1.22.4 always calls grotty in a way that adds ANSI/SGR escape codes.
+        -- (groff -c is supposed to switch those to backspaces, which we could
+        -- remove with col -b, but it doesn't as can be seen with groff -V.)
+        -- To get plain text, we run groff's lower-level commands (from -V) and add -cbuo.
+        -- -Wall silences most troff warnings, remove to see them
+        cmd Shell "tbl" src "| eqn -Tascii | troff -Wall -mandoc -Tascii | grotty -cbuo >" out
+
+      -- Generate Info manuals suitable for viewing with info, from the .m4.md source.
+      phony "infomanuals" $ need infomanuals
+      infomanuals |%> \out -> do -- hledger/hledger.info
+        let src       = out -<.> "m4.md"
+            commonm4  = "doc/common.m4"
+            commandsm4 = "hledger/Hledger/Cli/Commands/commands.m4"
+            dir       = takeDirectory out
+            packagemanversionm4 = dir </> ".version.m4"
+            packagemandatem4 = dir </> ".date.m4"
+        -- assume any other .m4.md files in dir are included by this one XXX not true in hledger-lib
+        subfiles <- liftIO $ filter (/= src) . filter (".m4.md" `isSuffixOf`) . map (dir </>) <$> S.getDirectoryContents dir
+        need $ [src, commonm4, commandsm4, packagemanversionm4, packagemandatem4] ++ subfiles
+        when (dir=="hledger") $ need commandmds
+        cmd Shell
+          m4 "-DINFO -I" dir commonm4 commandsm4 packagemanversionm4 packagemandatem4 src "|"
+          -- sed "-e 's/^#(#+)/\\1/'" "|"
+          pandoc fromsrcmd
+          "--lua-filter tools/pandoc-drop-html-blocks.lua"
+          "--lua-filter tools/pandoc-drop-html-inlines.lua"
+          "--lua-filter tools/pandoc-drop-links.lua"
+          -- add "standalone" headers ? sounds good for setting text encoding,
+          -- but messes up quotes ('a' becomes ^Xa^Y)
+          -- "-s"
+          "-t texinfo |"
+          makeinfo "-o" out
+
+
+      -- WEBSITE MARKDOWN SOURCE
+
+      -- Generate the individual web manuals' markdown source, using m4
+      -- and pandoc to tweak content.
+      phony "webmanuals" $ need webmanuals
+      webmanuals |%> \out -> do -- hledger/hledger.md, hledger/hledger-ui.md ..
+        let 
+            dir       = takeDirectory out -- hledger, hledger-lib
+            manpage   = webManualNameToManpageName $ dropExtension $ dropExtension $ takeFileName out -- hledger, journal
+            manual    = manpageNameToManualName manpage -- hledger, hledger_journal
+            src       = dir </> manual <.> "m4.md"
+            commonm4  = "doc/common.m4"
+            commandsm4 = "hledger/Hledger/Cli/Commands/commands.m4"
+            packageversionm4 = dir </> ".version.m4"
+            packagemandatem4 = dir </> ".date.m4"
+            heading   = let h = manual
+                        in if "hledger_" `isPrefixOf` h
+                           then drop 8 h ++ " format"
+                           else h
+        -- assume any other .m4.md files in dir are included by this one XXX not true in hledger-lib
+        subfiles <- liftIO $ filter (/= src) . filter (".m4.md" `isSuffixOf`) . map (dir </>) <$> S.getDirectoryContents dir
+        let deps = [src, commonm4, commandsm4, packageversionm4, packagemandatem4] ++ subfiles
+        need deps
+        when (manual=="hledger") $ need commandmds
+        -- add the web page's heading.
+        -- XXX Might be nice to do this atomically with the below, so
+        -- make avoid any double refresh when watch docs with entr/livereload.
+        -- But cmd Shell doesn't handle arguments containing spaces properly.
+        liftIO $ writeFile out $ unlines [
+           "<!-- " ++ "Generated by \"Shake webmanuals\" from " ++ unwords deps ++ " -->"
+          ,"<div class=\"docversions\"></div>"
+          ,"<div class=\"pagetoc\">"
+          ,"<!-- toc -->"
+          ,"</div>"
+          ,""
+          ,"# " ++ heading
+          ,""
+          ]
+        cmd Shell
+          m4 "-DWEB -I" dir commonm4 commandsm4 packageversionm4 packagemandatem4 src "|"
+          pandoc fromsrcmd towebmd
+          "--lua-filter tools/pandoc-demote-headers.lua"
+          ">>" out
+
+      -- This rule, for updating the live hledger.org site, gets called by:
+      -- 1. github-post-receive (github webhook handler), when something is pushed
+      --    to the main repo on Github. Config:
+      --     /etc/supervisord.conf -> [program:github-post-receive]
+      --     /etc/github-post-receive.conf
+      -- 2. cron, nightly. Config: /etc/crontab
+      -- 3. manually (make site).
+      -- phony "hledgerorg" $ do
+      --   -- XXX ideally we would ensure here that output is logged in site.log,
+      --   -- but I don't know how to do that for the Shake rules.
+      --   -- Instead we'll do the logging in "make site".
+      --   cmd_ Shell
       --
-      --  version: VER
-      cmd_ Shell sed "-i -e" ("'s/(^version *:).*/\\1 "++version++"/'") out
+      --     -- print timestamp. On mac, use brew-installed GNU date.
+      --     "PATH=\"/usr/local/opt/coreutils/libexec/gnubin:$PATH\" date --rfc-3339=seconds"
+      --     -- pull latest code and site repos - sometimes already done by webhook, not always
+      --     "&& printf 'code repo: ' && git pull"
+      --     "&& printf 'site repo: ' && git -C site pull"
       --
-      --  -DVERSION="VER"
-      cmd_ Shell sed "-i -e" ("'s/(-DVERSION=)\"[^\"]+/\\1\""++version++"/'") out
+      --   -- Shake.hs might have been updated, but we won't execute the
+      --   -- new one, too insecure. Continue with this one.
       --
-      --  this package's dependencies on other hledger packages (typically hledger-lib, hledger)
-      --
-      --  This one is a bit tricky, and we do it with these limitations:
-      --  a. We handle bounds in one of these forms (allowing extra whitespace):
-      --     ==A
-      --     >A
-      --     >=A
-      --     >A && <B
-      --     >=A && <B
-      --  b. We set
-      --     the new lower bound to:         this package's new version, V
-      --     the new upper bound if any, to: the next major version after V
-      --     both of which may not be what's desired.
-      --  c. We convert > bounds to >= bounds.
-      --
-      --  hledger[-PKG] ==LOWER
-      let versionre = "([0-9]+\\.)*[0-9]+"  -- 2 or 3 part version number regexp
-      cmd_ Shell sed "-i -e" ("'s/(hledger(-[a-z]+)?) *== *"++versionre++" *$/\\1 == "++version++"/'") out
-      --
-      --  hledger[-PKG] >[=]LOWER
-      cmd_ Shell sed "-i -e" ("'s/(hledger(-[a-z]+)?) *>=? *"++versionre++" *$/\\1 >= "++version++"/'") out
-      --
-      --  hledger[-PKG] >[=]LOWER && <UPPER
+      -- Help:
+      -- ,"./Shake hledgerorg       update the hledger.org website (when run on prod)"
+
+      -- HLEDGER PACKAGES/EXECUTABLES
+
+      -- build [PKGS]
+      -- Build some or all hledger packages, after generating any doc
+      -- files they embed or import.
+      -- This may also update .cabal files from package.yaml files, and/or install haskell deps.
+      phony "build" $ do
+        let
+          pkgs | null args = packages
+               | otherwise = args
+        sequence_ [ do
+          need $ fromMaybe [] $ lookup pkg embeddedFiles
+          cmd Shell "stack build " pkg :: Action ()
+          | pkg <- pkgs
+          ]
+
+      -- regenerate Hledger/Cli/Commands/*.txt from the .md source files for CLI help
+      phony "cmdhelp" $ do
+        need commandtxts
+        when commit $ do
+          let msg = ";update CLI usage texts"
+          cmd Shell gitcommit ("-m '"++msg++"' --") commandtxts
+
+      commandtxts |%> \out -> do
+        let src = out -<.> "md"
+        need [src]
+        cmd Shell
+          pandoc fromsrcmd src "--lua-filter" "tools/pandoc-dedent-code-blocks.lua" "-t plain" ">" out
+
+      -- CHANGELOGS
+
       let
-        pat = "(hledger(-[a-z]+)?) *>=? *"++versionre++" *&& *< *"++versionre++" *$"
-        rpl = "\\1 >="++version++" \\&\\& <"++nextmajorversion -- This was a beast. These ampersands must be backslash-escaped.
-        arg = "'s/"++pat++"/"++rpl++"/'"
-      cmd_ Shell sed "-i -e" arg out
+        -- git log showing short commit hashes
+        gitlog = "git log --abbrev-commit"
 
-      -- tagrelease: \
-      --   $(call def-help,tagrelease, commit a release tag based on $(VERSIONFILE) for each package )
-      --   for p in $(PACKAGES); do git tag -f $$p-$(VERSION); done
-       
-    -- MISC
+        -- git log formats suitable for changelogs/release notes
+        -- %s=subject, %an=author name, %n=newline if needed, %w=width/indent1/indent2, %b=body, %h=hash
+        changelogGitFormat = "--pretty=format:'- %s (%an)%n%w(0,2,2)%b\n'"
+        -- changelogVerboseGitFormat = "--pretty=format:'- %s (%an)%n%w(0,2,2)%b%h' --stat"
 
-    -- Generate the web manuals based on the current checkout and save
-    -- them as the specified versioned snapshot in site/doc/VER/ .
-    -- .snapshot is a dummy file.
-    "site/doc/*/.snapshot" %> \out -> do
-      need $ mdcombinedmanual : mdmanuals
-      let snapshot = takeDirectory out
-      cmd_ Shell "mkdir -p" snapshot
-      forM_ mdmanuals $ \f -> -- site/hledger.md, site/journal.md
-        cmd_ Shell "cp" f (snapshot </> takeFileName f)
-      cmd_ Shell "cp" "site/manual.md" snapshot
-      cmd_ Shell "cp -r site/images" snapshot
-      cmd_ Shell "touch" out
+        -- Format a git log message, with one of the formats above, as a changelog item
+        changelogCleanupCmd = unwords [
+           sed
+          ,"-e 's/^( )*\\* /\1- /'"        --  ensure bullet lists in descriptions use hyphens not stars
+          ,"-e 's/ \\(Simon Michael\\)//'" --  strip maintainer's author name
+          ,"-e 's/^- (doc: *)?(updated? *)?changelogs?( *updates?)?$//'"  --  strip some variants of "updated changelog"
+          ,"-e 's/^ +\\[ci skip\\] *$//'"  --  strip [ci skip] lines
+          ,"-e 's/^ +$//'"                 --  replace lines containing only spaces with empty lines
+          -- ,"-e 's/\r//'"                   --  strip windows carriage returns (XXX \r untested. IDEA doesn't like a real ^M here)
+          ,"-e '/./,/^$/!d'"               --  replace consecutive newlines with one
+          ]
 
-    -- Cleanup.
+        -- Things to exclude when doing git log for project-wide changelog.
+        -- git exclude pathspecs, https://git-scm.com/docs/gitglossary.html#gitglossary-aiddefpathspecapathspec
+        projectChangelogExcludeDirs = unwords [
+           ":!hledger-lib"
+          ,":!hledger"
+          ,":!hledger-ui"
+          ,":!hledger-web"
+          ,":!tests"
+          ]
 
-    phony "clean" $ do
-      -- putNormal "Cleaning generated help texts, manuals, staged site content"
-      -- removeFilesAfter "." commandtxts
-      putNormal "Cleaning generated manuals, staged site content"
-      removeFilesAfter "." mdmanuals
-      removeFilesAfter "." [mdcombinedmanual]
-      removeFilesAfter "." [
-        -- "site/README.md",
-        -- "site/CONTRIBUTING.md"
+      -- update all changelogs with latest commits
+      phony "changelogs" $ do
+        need changelogs
+        when commit $ do
+          let msg = ";update changelogs"
+          cmd Shell gitcommit ("-m '"++msg++"' --") changelogs
+
+      -- [PKG/]CHANGES.md
+      -- Add any new non-boring commits to the specified changelog, in
+      -- an idempotent way, minimising manual toil, as follows. We look at:
+      --
+      -- - the changelog's topmost markdown heading, which can be a
+      --   dev heading (first word is a git revision like 4fffe6e7) or
+      --   a release heading (first word is a release version & tag
+      --   like 1.18.1, second word is a date like 2020-06-21) or a
+      --   package release heading (hledger-ui-1.18.1).
+      --
+      -- - the package version, in the adjacent .version file, which
+      --   can be a dev version like 1.18.99 (first two digits of last
+      --   part are 97, 98 or 99) or a release version like 1.18.1
+      --   (any other cabal-style version).
+      --
+      -- The old changelog heading is removed if it was a dev heading;
+      -- new commits in PKG not prefixed with semicolon are added;
+      -- and a suitable new heading is added: a release heading if
+      -- the package version looks like a release version, otherwise 
+      -- a dev heading with the current HEAD revision.
+      -- 
+      -- With -n/--dry-run, print new content to stdout instead of
+      -- updating the changelog.
+      --
+      phonys (\out -> if
+        | not $ out `elem` changelogs -> Nothing
+        | otherwise -> Just $ do
+          tags <- lines . fromStdout <$> (cmd Shell "git tag" :: Action (Stdout String))
+          oldlines <- liftIO $ lines <$> readFileStrictly out
+          let
+            dir = takeDirectory out
+            mpkg | dir=="."  = Nothing
+                 | otherwise = Just dir
+            (preamble, oldheading:rest) = span isnotheading oldlines
+              where isnotheading = not . ("#" `isPrefixOf`)
+            -- changelog version: a hash or the last release version of this package (or the project)
+            changelogversion = headDef err $ drop 1 $ words oldheading
+              where err = error $ "could not parse changelog heading: "++oldheading
+            -- prepend the package name if we are in a package (not the top-level project directory)
+            maybePrependPackage s = maybe s (++("-"++s)) mpkg
+            toTag = maybePrependPackage
+            isOldRelease rev = isReleaseVersion rev && toTag rev `elem` tags
+            isNewRelease rev = isReleaseVersion rev && not (toTag rev `elem` tags)
+            -- git revision corresponding to the changelog version:
+            -- a hash (a3f19c15), package release tag (hledger-ui-1.20), or project release tag (1.20)
+            lastrev
+              | isOldRelease changelogversion = toTag changelogversion  -- package release tag
+              | isNewRelease changelogversion =
+                  trace (out ++ "'s version \""++changelogversion++"\" is not yet tagged, can't list changes")
+                  "HEAD"
+              | otherwise = changelogversion
+                
+          -- interesting commit messages between lastrev and HEAD, cleaned up
+          let
+            interestingpaths = fromMaybe projectChangelogExcludeDirs mpkg
+            interestingmessages = "--invert-grep --grep '^;'"  -- ignore commits beginning with ;
+          newitems <- fromStdout <$>
+                        (cmd Shell gitlog changelogGitFormat (lastrev++"..") interestingmessages "--" interestingpaths
+                         "|" changelogCleanupCmd :: Action (Stdout String))
+
+          -- git revision of current HEAD
+          headrev <- unwords . words . fromStdout <$>
+                     (cmd Shell gitlog "-1 --pretty=%h -- " interestingpaths :: Action (Stdout String))
+          -- package version: the version number currently configured for this package (or the project)
+          packageversion <-
+            let versionfile = dir </> ".version"
+                err = error $ "could not parse a version in "++versionfile
+            in liftIO $ headDef err . words <$> readFileStrictly versionfile
+          date <- liftIO getCurrentDay
+          let
+            -- the new changelog heading will be a final (dated, versioned) heading if
+            -- the configured package version is a new release version (non-dev & non-tagged)
+            (newrev, newheading)
+              | isNewRelease packageversion = (toTag packageversion, unwords [packageversion, show date])
+              | otherwise                   = (headrev, headrev)
+            newcontent = "# "++newheading++"\n" ++ newitems
+            newchangelog =
+                 unlines preamble
+              ++ newcontent
+              ++ (if isCommitHash changelogversion then "" else oldheading)
+              ++ unlines rest
+
+          liftIO $ if
+            | lastrev == newrev -> pure ()  -- putStrLn $ out ++ ": up to date"
+            | dryrun -> putStr $ out ++ ":\n" ++ newcontent
+            | otherwise -> do
+                writeFile out newchangelog
+                putStrLn $ out ++ ": updated to " ++ newrev
+
+          )
+
+      -- Update all program-specific docs, eg after setversion.
+      phony "docs" $ need [
+         "cmdhelp"
+        ,"manuals"
+        ,"changelogs"
         ]
 
-    phony "Clean" $ do
-      need ["clean"]
-      putNormal "Cleaning generated site content, object files, shake build cache"
-      removeFilesAfter "site" ["_*"]
-      removeFilesAfter "tools"  ["*.o","*.p_o","*.hi"]
-      removeFilesAfter "site" ["*.o","*.p_o","*.hi"]
-      removeFilesAfter ".shake" ["//*"]
+      -- MISC
 
+      -- Generate the web manuals based on the current checkout and save
+      -- them as the specified versioned snapshot in site/doc/VER/ .
+      -- .snapshot is a dummy file.
+      -- "site/doc/*/.snapshot" %> \out -> do
+      --   need webmanuals
+      --   let snapshot = takeDirectory out
+      --   cmd_ Shell "mkdir -p" snapshot
+      --   forM_ webmanuals $ \f -> -- site/hledger.md, site/journal.md
+      --     cmd_ Shell "cp" f (snapshot </> takeFileName f)
+      --   cmd_ Shell "cp -r site/images" snapshot
+      --   cmd_ Shell "touch" out
+      -- Help:
+      -- ,"./Shake site/doc/VERSION/.snapshot  save current web manuals as this snapshot"
+
+      -- Cleanup.
+
+      phony "clean" $ do
+        putNormal "Cleaning object files in tools"
+        removeFilesAfter "tools"  ["*.o","*.p_o","*.hi"]
+
+      phony "Clean" $ do
+        need ["clean"]
+        putNormal "Cleaning shake build cache"
+        removeFilesAfter ".shake" ["//*"]
+
+  
 
 -- Convert numbered man page names to manual names.
 -- hledger.1 -> hledger, hledger_journal.5 -> hledger_journal
@@ -754,69 +756,45 @@ dropDirectory2 = dropDirectory1 . dropDirectory1
 readFileStrictly :: FilePath -> IO String
 readFileStrictly f = readFile f >>= \s -> C.evaluate (length s) >> return s
 
+-- Write new content to a file, only if it's different.
+maybeWriteFile :: FilePath -> String -> IO ()
+maybeWriteFile f new = do
+  old <- readFileStrictly f
+  when (old /= new) $ writeFile f new
+
 -- | Get the current local date.
 getCurrentDay :: IO Day
 getCurrentDay = do
   t <- getZonedTime
   return $ localDay (zonedTimeToLocalTime t)
 
--- markdown helpers
+-- | Replace each occurrence of a regular expression by this string.
+replaceRe :: RE -> String -> String -> String
+replaceRe re repl = replaceBy re (\_ _ _ -> Just repl)
 
-type Markdown = String
-
--- | Prepend a markdown heading.
-addHeading :: String -> Markdown -> Markdown
-addHeading h = (("# "++h++"\n\n")++)
-
--- | Prepend a table of contents placeholder.
-addToc :: Markdown -> Markdown
-addToc = ((tocMarker++"\n\n")++)
-  where tocMarker = "$TOC$"
-
--- | Convert Github-style wikilinks to hledger website links.
-wikiLink :: Markdown -> Markdown
-wikiLink =
-  replaceBy wikilinkre         wikilinkReplace         .
-  replaceBy labelledwikilinkre labelledwikilinkReplace
-  
--- regex stuff
-
--- couldn't figure out how to use match subgroups, so we don't
--- wikilinkre         = [re|\[\[$([^]]+)]]|]                -- [[A]]
--- labelledwikilinkre = [re|\[\[$([^(|)]+)\|$([^]]*)\]\]|]  -- [[A|B]]
-wikilinkre         = [re|\[\[[^]]+]]|]             -- [[A]]
-labelledwikilinkre = [re|\[\[[^(|)]+\|[^]]*\]\]|]  -- [[A|B]]. The | is parenthesised to avoid ending the quasiquoter
-
--- wikilinkReplace _ loc@RELocation{locationCapture} cap@Capture{capturedText} =
-wikilinkReplace _ _ Capture{capturedText} =
-  -- trace (show (loc,cap)) $
-  Just $ "["++name++"]("++uri++")"
-  where
-    name = init $ init $ drop 2 capturedText
-    uri  = pageNameToUri name
-
--- labelledwikilinkReplace _ loc@RELocation{locationCapture} cap@Capture{capturedText} =
-labelledwikilinkReplace _ _ Capture{capturedText} =
-  Just $ "["++label++"]("++uri++")"
-  where
-    [label,name] = take 2 $ (splitOn "|" $ init $ init $ drop 2 capturedText) ++ [""]
-    uri = pageNameToUri name
-
-pageNameToUri = (++".html") . intercalate "-" . words
-
-fileNameToPageName = unwords . splitOn "-"
-
--- | Easier regex replace helper. Replaces each occurrence of a
--- regular expression in src, by transforming each matched text with
--- the given function.
+-- | Replace each occurrence of a regular expression, by transforming
+-- each matched text with the given function.
+replaceBy :: RE -> (Match String -> RELocation -> Capture String -> Maybe String) -> String -> String
 replaceBy re f src = replaceAllCaptures TOP f $ src *=~ re
 
--- not powerful enough, saved for reference:
--- wikify = (*=~/ wikilinkreplace) . (*=~/ labelledwikilinkreplace)
---   where
---     -- [[A]] -> [A](.../A)
---     wikilinkreplace :: SearchReplace RE String
---     wikilinkreplace = [ed|\[\[$([^]]+)]]///[$1]($1.html)|]
---     -- [[A|B]] -> [A](.../B)
---     labelledwikilinkreplace :: SearchReplace RE String
---     labelledwikilinkreplace = [ed|\[\[$([^(|)]+)\|$([^]]*)\]\]///[$1]($2.html)|]
+-- | Does this string look like a valid cabal package version ?
+isVersion s = not (null s) && all (`elem` "0123456789.") s
+
+-- | Does this string look like a hledger development version ?
+-- Ie a version where the first two digits of the last part are the
+-- special values 97, 98 or 99, indicating alpha/beta/rc or whatever.
+isDevVersion s = isVersion s && lastpart >= "97"
+  where lastpart = lastDef "" $ splitOn "." s
+
+-- | Does this string look like a hledger release version ?
+-- Ie a cabal package version that's not a hledger development version.
+isReleaseVersion s = isVersion s && not (isDevVersion s)
+
+-- | Does this string look like a git commit hash ?
+-- Ie a sequence of 7 or more numbers or letters.
+isCommitHash s = length s > 6 && all isAlphaNum s
+
+-- | Remove all trailing newlines/carriage returns.
+chomp :: String -> String
+chomp = reverse . dropWhile (`elem` "\r\n") . reverse
+

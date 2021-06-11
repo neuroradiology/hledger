@@ -19,7 +19,7 @@ You can use the command line:
 or ghci:
 
 > $ ghci hledger
-> > j <- readJournalFile def "examples/sample.journal"
+> > Right j <- readJournalFile definputopts "examples/sample.journal"
 > > register [] ["income","expenses"] j
 > 2008/01/01 income               income:salary                   $-1          $-1
 > 2008/06/01 gift                 income:gifts                    $-1          $-2
@@ -30,20 +30,18 @@ or ghci:
 >                   $2  expenses
 >                  $-2  income
 >                   $1  liabilities
-> > l <- myLedger
+> > j <- defaultJournal
 
-See "Hledger.Data.Ledger" for more examples.
+etc.
 
 -}
-
-{-# LANGUAGE QuasiQuotes #-}
 
 module Hledger.Cli.Main where
 
 import Data.Char (isDigit)
 import Data.List
 import Safe
-import System.Console.CmdArgs.Explicit as C
+import qualified System.Console.CmdArgs.Explicit as C
 import System.Environment
 import System.Exit
 import System.FilePath
@@ -82,14 +80,14 @@ mainmode addons = defMode {
         [detailedversionflag]
         -- ++ inputflags -- included here so they'll not raise a confusing error if present with no COMMAND
     }
- ,modeHelpSuffix = map (regexReplace "PROGNAME" progname) [
-     "Examples:"
-    ,"PROGNAME                         list commands"
-    ,"PROGNAME CMD [--] [OPTS] [ARGS]  run a command (use -- with addon commands)"
-    ,"PROGNAME-CMD [OPTS] [ARGS]       or run addon commands directly"
-    ,"PROGNAME -h                      show general usage"
-    ,"PROGNAME CMD -h                  show command usage"
-    ,"PROGNAME help [MANUAL]           show any of the hledger manuals in various formats"
+ ,modeHelpSuffix = "Examples:" :
+    map (progname ++) [
+     "                         list commands"
+    ," CMD [--] [OPTS] [ARGS]  run a command (use -- with addon commands)"
+    ,"-CMD [OPTS] [ARGS]       or run addon commands directly"
+    ," -h                      show general usage"
+    ," CMD -h                  show command usage"
+    ," help [MANUAL]           show any of the hledger manuals in various formats"
     ]
  }
 
@@ -115,7 +113,7 @@ main = do
     (argsbeforecmd, argsaftercmd') = break (==rawcmd) args
     argsaftercmd         = drop 1 argsaftercmd'
     dbgIO :: Show a => String -> a -> IO ()
-    dbgIO = ptraceAtIO 2
+    dbgIO = ptraceAtIO 8
 
   dbgIO "running" prognameandversion
   dbgIO "raw args" args
@@ -138,31 +136,37 @@ main = do
     isExternalCommand    = not (null cmd) && cmd `elem` addons -- probably
     isBadCommand         = not (null rawcmd) && null cmd
     hasVersion           = ("--version" `elem`)
-    hasDetailedVersion   = ("--version+" `elem`)
     printUsage           = putStr $ showModeUsage $ mainmode addons
-    badCommandError      = error' ("command "++rawcmd++" is not recognized, run with no command to see a list") >> exitFailure
+    badCommandError      = error' ("command "++rawcmd++" is not recognized, run with no command to see a list") >> exitFailure  -- PARTIAL:
     hasHelpFlag args     = any (`elem` args) ["-h","--help"]
+    hasManFlag args      = any (`elem` args) ["--man"]
+    hasInfoFlag args     = any (`elem` args) ["--info"]
     f `orShowHelp` mode
       | hasHelpFlag args = putStr $ showModeUsage mode
+      | hasInfoFlag args = runInfoForTopic "hledger" (headMay $ modeNames mode)
+      | hasManFlag args  = runManForTopic "hledger" (headMay $ modeNames mode)
       | otherwise        = f
+      -- where
+      --   lastdocflag
   dbgIO "processed opts" opts
   dbgIO "command matched" cmd
   dbgIO "isNullCommand" isNullCommand
   dbgIO "isInternalCommand" isInternalCommand
   dbgIO "isExternalCommand" isExternalCommand
   dbgIO "isBadCommand" isBadCommand
-  d <- getCurrentDay
-  dbgIO "period from opts" (period_ $ reportopts_ opts)
-  dbgIO "interval from opts" (interval_ $ reportopts_ opts)
-  dbgIO "query from opts & args" (queryFromOpts d $ reportopts_ opts)
+  dbgIO "period from opts" (period_ . rsOpts $ reportspec_ opts)
+  dbgIO "interval from opts" (interval_ . rsOpts $ reportspec_ opts)
+  dbgIO "query from opts & args" (rsQuery $ reportspec_ opts)
   let
+    journallesserror = error $ cmd++" tried to read the journal but is not supposed to"
     runHledgerCommand
       -- high priority flags and situations. -h, then --help, then --info are highest priority.
-      | hasHelpFlag argsbeforecmd = dbgIO "" "-h before command, showing general usage" >> printUsage
-      | not (hasHelpFlag argsaftercmd) && (hasVersion argsbeforecmd || (hasVersion argsaftercmd && isInternalCommand))
+      | isNullCommand && hasHelpFlag args = dbgIO "" "-h/--help with no command, showing general help" >> printUsage
+      | isNullCommand && hasInfoFlag args = dbgIO "" "--info with no command, showing general info manual" >> runInfoForTopic "hledger" Nothing
+      | isNullCommand && hasManFlag args  = dbgIO "" "--man with no command, showing general man page" >> runManForTopic "hledger" Nothing
+      | not (isExternalCommand || hasHelpFlag args || hasInfoFlag args || hasManFlag args)
+        && (hasVersion args) --  || (hasVersion argsaftercmd && isInternalCommand))
                                  = putStrLn prognameandversion
-      | not (hasHelpFlag argsaftercmd) && (hasDetailedVersion argsbeforecmd || (hasDetailedVersion argsaftercmd && isInternalCommand))
-                                 = putStrLn prognameanddetailedversion
       -- \| (null externalcmd) && "binary-filename" `inRawOpts` rawopts = putStrLn $ binaryfilename progname
       -- \| "--browse-args" `elem` args     = System.Console.CmdArgs.Helper.execute "cmdargs-browser" mainmode' args >>= (putStr . show)
       | isNullCommand            = dbgIO "" "no command, showing commands list" >> printCommandsList addons
@@ -170,14 +174,15 @@ main = do
 
       -- builtin commands
       | Just (cmdmode, cmdaction) <- findCommand cmd =
-        (case cmd of
-          "test" -> -- should not read the journal
-            cmdaction opts (error "journal-less command tried to use the journal")
-          "add" ->  -- should create the journal if missing
-            (ensureJournalFileExists =<< (head <$> journalFilePathFromOpts opts)) >>
+        (case True of
+           -- these commands should not require or read the journal
+          _ | cmd `elem` ["test","help"] -> cmdaction opts journallesserror
+          -- these commands should create the journal if missing
+          _ | cmd `elem` ["add","import"] -> do
+            (ensureJournalFileExists =<< (head <$> journalFilePathFromOpts opts))
             withJournalDo opts (cmdaction opts)
-          _ ->      -- all other commands: read the journal or fail if missing
-            withJournalDo opts (cmdaction opts)
+          -- other commands read the journal and should fail if it's missing
+          _ -> withJournalDo opts (cmdaction opts)
         )
         `orShowHelp` cmdmode
 
@@ -204,9 +209,8 @@ argsToCliOpts :: [String] -> [String] -> IO CliOpts
 argsToCliOpts args addons = do
   let
     args'        = moveFlagsAfterCommand $ replaceNumericFlags args
-    cmdargsopts  = either usageError id $ process (mainmode addons) args'
-    cmdargsopts' = decodeRawOpts cmdargsopts
-  rawOptsToCliOpts cmdargsopts'
+    cmdargsopts  = either usageError id $ C.process (mainmode addons) args'
+  rawOptsToCliOpts cmdargsopts
 
 -- | A hacky workaround for cmdargs not accepting flags before the
 -- subcommand name: try to detect and move such flags after the

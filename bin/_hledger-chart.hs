@@ -56,7 +56,7 @@ cmdmode = hledgerCommandMode
   [here| chart
 Generate a pie chart for the top account balances with the same sign,
 in SVG format.
- 
+
 Based on the old hledger-chart package, this is not yet useful.
 It's supposed to show only balances of one sign, but this might be broken.
   |]
@@ -162,7 +162,7 @@ sameSignNonZero is
  | otherwise = (map pos $ filter (test.fourth4) nzs, sign)
  where
    nzs = filter ((/=0).fourth4) is
-   pos (acct,_,_,Mixed as) = (acct, abs $ read $ show $ maybe 0 aquantity $ headMay as)
+   pos (acct,_,_,as) = (acct, abs $ read $ show $ maybe 0 aquantity $ headMay $ amounts as)
    sign = if fourth4 (head nzs) >= 0 then 1 else (-1)
    test = if sign > 0 then (>0) else (<0)
 

@@ -15,8 +15,8 @@ module Hledger.Data (
                module Hledger.Data.Commodity,
                module Hledger.Data.Dates,
                module Hledger.Data.Journal,
+               module Hledger.Data.Json,
                module Hledger.Data.Ledger,
-               module Hledger.Data.Prices,
                module Hledger.Data.Period,
                module Hledger.Data.PeriodicTransaction,
                module Hledger.Data.Posting,
@@ -26,6 +26,7 @@ module Hledger.Data (
                module Hledger.Data.Transaction,
                module Hledger.Data.TransactionModifier,
                module Hledger.Data.Types,
+               module Hledger.Data.Valuation,
                tests_Data
               )
 where
@@ -36,8 +37,8 @@ import Hledger.Data.Amount
 import Hledger.Data.Commodity
 import Hledger.Data.Dates
 import Hledger.Data.Journal
+import Hledger.Data.Json
 import Hledger.Data.Ledger
-import Hledger.Data.Prices
 import Hledger.Data.Period
 import Hledger.Data.PeriodicTransaction
 import Hledger.Data.Posting
@@ -46,7 +47,8 @@ import Hledger.Data.StringFormat
 import Hledger.Data.Timeclock
 import Hledger.Data.Transaction
 import Hledger.Data.TransactionModifier
-import Hledger.Data.Types
+import Hledger.Data.Types hiding (MixedAmountKey, Mixed)
+import Hledger.Data.Valuation
 import Hledger.Utils.Test
 
 tests_Data = tests "Data" [
@@ -55,7 +57,7 @@ tests_Data = tests "Data" [
   ,tests_Journal
   ,tests_Ledger
   ,tests_Posting
-  ,tests_Prices
+  ,tests_Valuation
   ,tests_StringFormat
   ,tests_Timeclock
   ,tests_Transaction

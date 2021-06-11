@@ -2,7 +2,7 @@ rewrite\
 Print all transactions, rewriting the postings of matched transactions.
 For now the only rewrite available is adding new postings, like print --auto.
 
-_FLAGS_
+_FLAGS
 
 This is a start at a generic rewriter of transaction entries.
 It reads the default journal and prints the transactions, like print,
@@ -41,7 +41,7 @@ amount of original matched posting.  If the amount includes a commodity name,
 the new posting amount will be in the new commodity; otherwise, it will be in
 the matched posting amount's commodity.
 
-#### Re-write rules in a file
+### Re-write rules in a file
 
 During the run this tool will execute so called
 ["Automated Transactions"](http://ledger-cli.org/3.0/doc/ledger3.html#Automated-Transactions)
@@ -83,7 +83,7 @@ $ hledger rewrite -- -f input.journal '^income' --add-posting '(liabilities:tax)
 It is important to understand that relative order of such entries in journal is
 important. You can re-use result of previously added postings.
 
-#### Diff output format
+### Diff output format
 
 To use this tool for batch modification of your journal files you may find
 useful output in form of unified diff.
@@ -123,7 +123,7 @@ See also:
 
 https://github.com/simonmichael/hledger/issues/99
 
-#### rewrite vs. print --auto
+### rewrite vs. print --auto
 
 This command predates print --auto, and currently does much the same thing,
 but with these differences:

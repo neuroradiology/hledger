@@ -1,29 +1,25 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE DeriveDataTypeable #-}
 {-|
 
 -}
 
 module Hledger.UI.UIOptions
 where
-import Data.Data (Data)
 import Data.Default
-import Data.Typeable (Typeable)
 import Data.List (intercalate)
 import System.Environment
 
 import Hledger.Cli hiding (progname,version,prognameandversion)
 import Hledger.UI.Theme (themeNames)
 
-progname, version :: String
+progname, version, prognameandversion :: String
 progname = "hledger-ui"
 #ifdef VERSION
 version = VERSION
 #else
 version = ""
 #endif
-prognameandversion :: String
-prognameandversion = progname ++ " " ++ version :: String
+prognameandversion = versiondescription progname
 
 uiflags = [
   -- flagNone ["debug-ui"] (setboolopt "rules-file") "run with no terminal output, showing console"
@@ -36,22 +32,21 @@ uiflags = [
   --   "show balance change accumulated across periods (in multicolumn reports)"
   -- ,flagNone ["historical","H"] (setboolopt "historical")
   --   "show historical ending balance in each period (includes postings before report start date)\n "
-  ,flagNone ["flat","F"] (setboolopt "flat") "show accounts as a list (default)"
-  ,flagNone ["tree","T"] (setboolopt "tree") "show accounts as a tree"
+  ]
+  ++ flattreeflags False
 --  ,flagNone ["present"] (setboolopt "present") "exclude transactions dated later than today (default)"
-  ,flagNone ["future"] (setboolopt "future") "show transactions dated later than today (normally hidden)"
   -- ,flagReq ["drop"] (\s opts -> Right $ setopt "drop" s opts) "N" "with --flat, omit this many leading account name components"
   -- ,flagReq  ["format"] (\s opts -> Right $ setopt "format" s opts) "FORMATSTR" "use this custom line format"
   -- ,flagNone ["no-elide"] (setboolopt "no-elide") "don't compress empty parent accounts on one line"
- ]
 
---uimode :: Mode [([Char], [Char])]
-uimode =  (mode "hledger-ui" [("command","ui")]
+--uimode :: Mode RawOpts
+uimode =  (mode "hledger-ui" (setopt "command" "ui" def)
             "browse accounts, postings and entries in a full-window curses interface"
             (argsFlag "[PATTERNS]") []){
               modeGroupFlags = Group {
                                 groupUnnamed = uiflags
-                               ,groupHidden = []
+                               ,groupHidden = hiddenflags
+                                 ++ [flagNone ["future"] (setboolopt "forecast") "compatibility alias, use --forecast instead"]
                                ,groupNamed = [(generalflagsgroup1)]
                                }
              ,modeHelpSuffix=[
@@ -61,17 +56,16 @@ uimode =  (mode "hledger-ui" [("command","ui")]
 
 -- hledger-ui options, used in hledger-ui and above
 data UIOpts = UIOpts {
-     watch_   :: Bool
-    ,change_  :: Bool
-    ,presentorfuture_  :: PresentOrFutureOpt
-    ,cliopts_ :: CliOpts
+     watch_       :: Bool
+    ,change_      :: Bool
+    ,cliopts_     :: CliOpts
  } deriving (Show)
 
 defuiopts = UIOpts
-    def
-    def
-    def
-    def
+  { watch_   = False
+  , change_  = False
+  , cliopts_ = def
+  }
 
 -- instance Default CliOpts where def = defcliopts
 
@@ -79,23 +73,10 @@ rawOptsToUIOpts :: RawOpts -> IO UIOpts
 rawOptsToUIOpts rawopts = checkUIOpts <$> do
   cliopts <- rawOptsToCliOpts rawopts
   return defuiopts {
-              watch_   = boolopt "watch" rawopts
-             ,change_  = boolopt "change" rawopts
-             ,presentorfuture_ = presentorfutureopt rawopts
-             ,cliopts_ = cliopts
+              watch_       = boolopt "watch" rawopts
+             ,change_      = boolopt "change" rawopts
+             ,cliopts_     = cliopts
              }
-
--- | Should transactions dated later than today be included ? 
--- Like flat/tree mode, there are three states, and the meaning of default can vary by command.
-data PresentOrFutureOpt = PFDefault | PFPresent | PFFuture deriving (Eq, Show, Data, Typeable)
-instance Default PresentOrFutureOpt where def = PFDefault
-
-presentorfutureopt :: RawOpts -> PresentOrFutureOpt
-presentorfutureopt rawopts =
-  case reverse $ filter (`elem` ["present","future"]) $ map fst rawopts of
-    ("present":_) -> PFPresent
-    ("future":_)  -> PFFuture
-    _             -> PFDefault
 
 checkUIOpts :: UIOpts -> UIOpts
 checkUIOpts opts =
@@ -106,10 +87,9 @@ checkUIOpts opts =
 
 -- XXX some refactoring seems due
 getHledgerUIOpts :: IO UIOpts
---getHledgerUIOpts = processArgs uimode >>= return . decodeRawOpts >>= rawOptsToUIOpts
+--getHledgerUIOpts = processArgs uimode >>= return >>= rawOptsToUIOpts
 getHledgerUIOpts = do
   args <- getArgs >>= expandArgsAt
-  let args' = replaceNumericFlags args 
+  let args' = replaceNumericFlags args
   let cmdargopts = either usageError id $ process uimode args'
-  rawOptsToUIOpts $ decodeRawOpts cmdargopts 
-
+  rawOptsToUIOpts cmdargopts

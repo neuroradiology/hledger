@@ -1,7 +1,8 @@
 add\
 Prompt for transactions and add them to the journal.
+Any arguments will be used as default inputs for the first N prompts.
 
-_FLAGS_
+_FLAGS
 
 Many hledger users edit their journals directly with a text editor, or generate them from CSV.
 For more interactive data entry, there is the `add` command, 
@@ -28,7 +29,7 @@ Features:
   it will be added to any bare numbers entered.
 - A parenthesised transaction [code](#entries) may be entered following a date.
 - [Comments](#comments) and tags may be entered following a description or amount.
-- If you make a mistake, enter `<` at any prompt to restart the transaction.
+- If you make a mistake, enter `<` at any prompt to go one step backward.
 - Input prompts are displayed in a different colour when the terminal supports it.
 
 Example (see the [tutorial](step-by-step.html#record-a-transaction-with-hledger-add) for a detailed explanation):
@@ -40,7 +41,7 @@ Any command line arguments will be used as defaults.
 Use tab key to complete, readline keys to edit, enter to accept defaults.
 An optional (CODE) may follow transaction dates.
 An optional ; COMMENT may follow descriptions or amounts.
-If you make a mistake, enter < at any prompt to restart the transaction.
+If you make a mistake, enter < at any prompt to go one step backward.
 To end a transaction, enter . when prompted.
 To quit, enter . at a date prompt or press control-d or control-c.
 Date [2015/05/22]: 
@@ -60,3 +61,6 @@ Starting the next transaction (. or ctrl-D/ctrl-C to quit)
 Date [2015/05/22]: <CTRL-D> $
 ```
 
+On Microsoft Windows, the add command makes sure that no part of the
+file path ends with a period, as that would cause problems
+([#1056](https://github.com/simonmichael/hledger/issues/1056)).

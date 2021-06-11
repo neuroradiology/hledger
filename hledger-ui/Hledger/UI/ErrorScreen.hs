@@ -1,7 +1,8 @@
 -- The error screen, showing a current error condition (such as a parse error after reloading the journal)
 
-{-# LANGUAGE OverloadedStrings, FlexibleContexts, RecordWildCards #-}
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards   #-}
 
 module Hledger.UI.ErrorScreen
  (errorScreen
@@ -15,9 +16,6 @@ import Brick
 -- import Brick.Widgets.Border ("border")
 import Control.Monad
 import Control.Monad.IO.Class (liftIO)
-#if !(MIN_VERSION_base(4,11,0))
-import Data.Monoid
-#endif
 import Data.Time.Calendar (Day)
 import Data.Void (Void)
 import Graphics.Vty (Event(..),Key(..),Modifier(..))
@@ -30,6 +28,7 @@ import Hledger.UI.UITypes
 import Hledger.UI.UIState
 import Hledger.UI.UIUtils
 import Hledger.UI.Editor
+import Data.Foldable (asum)
 
 errorScreen :: Screen
 errorScreen = ErrorScreen{
@@ -41,7 +40,7 @@ errorScreen = ErrorScreen{
 
 esInit :: Day -> Bool -> UIState -> UIState
 esInit _ _ ui@UIState{aScreen=ErrorScreen{}} = ui
-esInit _ _ _ = error "init function called with wrong screen type, should not happen"
+esInit _ _ _ = error "init function called with wrong screen type, should not happen"  -- PARTIAL:
 
 esDraw :: UIState -> [Widget Name]
 esDraw UIState{aopts=UIOpts{cliopts_=copts@CliOpts{}}
@@ -72,7 +71,7 @@ esDraw UIState{aopts=UIOpts{cliopts_=copts@CliOpts{}}
               ,("q", "quit")
               ]
 
-esDraw _ = error "draw function called with wrong screen type, should not happen"
+esDraw _ = error "draw function called with wrong screen type, should not happen"  -- PARTIAL:
 
 esHandle :: UIState -> BrickEvent Name AppEvent -> EventM Name (Next UIState)
 esHandle ui@UIState{aScreen=ErrorScreen{..}
@@ -99,7 +98,7 @@ esHandle ui@UIState{aScreen=ErrorScreen{..}
           where
             (pos,f) = case parsewithString hledgerparseerrorpositionp esError of
                         Right (f,l,c) -> (Just (l, Just c),f)
-                        Left  _       -> (endPos, journalFilePath j)
+                        Left  _       -> (endPosition, journalFilePath j)
         e | e `elem` [VtyEvent (EvKey (KChar 'g') []), AppEvent FileChange] ->
           liftIO (uiReloadJournal copts d (popScreen ui)) >>= continue . uiCheckBalanceAssertions d
 --           (ej, _) <- liftIO $ journalReloadIfChanged copts d j
@@ -111,7 +110,7 @@ esHandle ui@UIState{aScreen=ErrorScreen{..}
         VtyEvent (EvKey (KChar 'z') [MCtrl]) -> suspend ui
         _ -> continue ui
 
-esHandle _ _ = error "event handler called with wrong screen type, should not happen"
+esHandle _ _ = error "event handler called with wrong screen type, should not happen"  -- PARTIAL:
 
 -- | Parse the file name, line and column number from a hledger parse error message, if possible.
 -- Temporary, we should keep the original parse error location. XXX
@@ -137,43 +136,67 @@ hledgerparseerrorpositionp = do
       ]
 
 
--- Unconditionally reload the journal, regenerating the current screen
--- and all previous screens in the history.
+-- | Unconditionally reload the journal, regenerating the current screen
+-- and all previous screens in the history as of the provided today-date.
 -- If reloading fails, enter the error screen, or if we're already
 -- on the error screen, update the error displayed.
--- The provided CliOpts are used for reloading, and then saved
--- in the UIState if reloading is successful (otherwise the
--- ui state keeps its old cli opts.)
 -- Defined here so it can reference the error screen.
+--
+-- The provided CliOpts are used for reloading, and then saved in the
+-- UIState if reloading is successful (otherwise the UIState keeps its old
+-- CliOpts.) (XXX needed for.. ?)
+--
+-- Forecasted transactions are always generated, as at hledger-ui startup.
+-- If a forecast period is specified in the provided opts, or was specified
+-- at startup, it is preserved.
+--
 uiReloadJournal :: CliOpts -> Day -> UIState -> IO UIState
 uiReloadJournal copts d ui = do
-  ej <- journalReload copts
+  ej <-
+    let copts' = enableForecastPreservingPeriod ui copts
+    in journalReload copts'
   return $ case ej of
-    Right j  -> regenerateScreens j d ui{aopts=(aopts ui){cliopts_=copts}}
+    Right j  -> regenerateScreens j d ui
     Left err ->
       case ui of
         UIState{aScreen=s@ErrorScreen{}} -> ui{aScreen=s{esError=err}}
         _                                -> screenEnter d errorScreen{esError=err} ui
 
--- Like uiReloadJournal, but does not bother re-parsing the journal if
--- the file(s) have not changed since last loaded. Always regenerates
--- the current and previous screens though, since opts or date may have changed.
+-- | Like uiReloadJournal, but does not re-parse the journal if the file(s)
+-- have not changed since last loaded. Always regenerates the screens though,
+-- since the provided options or today-date may have changed.
 uiReloadJournalIfChanged :: CliOpts -> Day -> Journal -> UIState -> IO UIState
 uiReloadJournalIfChanged copts d j ui = do
-  (ej, _changed) <- journalReloadIfChanged copts d j
+  (ej, _changed) <-
+    let copts' = enableForecastPreservingPeriod ui copts
+    in journalReloadIfChanged copts' d j
   return $ case ej of
-    Right j' -> regenerateScreens j' d ui{aopts=(aopts ui){cliopts_=copts}}
+    Right j' -> regenerateScreens j' d ui
     Left err ->
       case ui of
         UIState{aScreen=s@ErrorScreen{}} -> ui{aScreen=s{esError=err}}
         _                                -> screenEnter d errorScreen{esError=err} ui
+
+-- | Ensure this CliOpts enables forecasted transactions.
+-- If a forecast period was specified in the old CliOpts,
+-- or in the provided UIState's startup options,
+-- it is preserved.
+enableForecastPreservingPeriod :: UIState -> CliOpts -> CliOpts
+enableForecastPreservingPeriod ui copts@CliOpts{reportspec_=rspec@ReportSpec{rsOpts=ropts}} =
+  copts{reportspec_=rspec{rsOpts=ropts{forecast_=mforecast}}}
+  where
+    mforecast = asum [mprovidedforecastperiod, mstartupforecastperiod, mdefaultforecastperiod]
+      where
+        mprovidedforecastperiod = forecast_ ropts
+        mstartupforecastperiod  = forecast_ $ rsOpts $ reportspec_ $ cliopts_ $ astartupopts ui
+        mdefaultforecastperiod  = Just nulldatespan
 
 -- Re-check any balance assertions in the current journal, and if any
 -- fail, enter (or update) the error screen. Or if balance assertions
 -- are disabled, do nothing.
 uiCheckBalanceAssertions :: Day -> UIState -> UIState
 uiCheckBalanceAssertions d ui@UIState{aopts=UIOpts{cliopts_=copts}, ajournal=j}
-  | ignore_assertions_ $ inputopts_ copts = ui
+  | ignore_assertions_ . balancingopts_ $ inputopts_ copts = ui
   | otherwise =
     case journalCheckBalanceAssertions j of
       Nothing  -> ui
